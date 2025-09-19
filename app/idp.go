@@ -11,6 +11,12 @@ import (
 	"golang.org/x/oauth2"
 )
 
+// IdentityProvider represents the minimal behaviour required from an upstream IdP.
+type IdentityProvider interface {
+	AuthCodeURL(state, nonce, codeChallenge, method string) string
+	Exchange(ctx context.Context, code, expectedNonce string) (ProviderUser, error)
+}
+
 // OIDCProvider wraps an upstream IdP configuration and helpers.
 type OIDCProvider struct {
 	name        string
@@ -103,8 +109,8 @@ func (p *OIDCProvider) Exchange(ctx context.Context, code, expectedNonce string)
 }
 
 // BuildProviders prepares all configured upstream providers.
-func BuildProviders(ctx context.Context, cfg Config, logger *slog.Logger) (map[string]*OIDCProvider, error) {
-	providers := make(map[string]*OIDCProvider)
+func BuildProviders(ctx context.Context, cfg Config, logger *slog.Logger) (map[string]IdentityProvider, error) {
+	providers := make(map[string]IdentityProvider)
 
 	add := func(name string, upstream UpstreamProvider) error {
 		if upstream.Issuer == "" {

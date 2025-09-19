@@ -25,7 +25,7 @@ type App struct {
 	Tokens          *TokenService
 	JWKS            *JWKSManager
 	Clients         *ClientRegistry
-	Providers       map[string]*OIDCProvider
+	Providers       map[string]IdentityProvider
 	DefaultProvider string
 }
 
