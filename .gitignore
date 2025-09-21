@@ -32,3 +32,4 @@ go.work.sum
 # .vscode/
 .gitignore
 */config.yaml
+config.yaml
