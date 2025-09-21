@@ -3,10 +3,13 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
 	"crypto/tls"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"log/slog"
 	"net/http"
@@ -25,21 +28,52 @@ import (
 
 func main() {
 	configPath := flag.String("config", os.Getenv("OIDCD_CONFIG"), "Path to YAML config")
+	logLevel := flag.String("log-level", "info", "Logging level (debug, info, warn, error)")
+	flag.StringVar(logLevel, "l", "info", "Alias for -log-level")
 	flag.Parse()
 
-	configFile := *configPath
-	if configFile == "" && flag.NArg() > 0 {
-		configFile = flag.Arg(0)
-	}
-	if configFile == "" {
-		configFile = "config.yaml"
+	level, err := parseLogLevel(*logLevel)
+	if err != nil {
+		log.Fatalf("invalid log level %q: %v", *logLevel, err)
 	}
 
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	args := flag.Args()
+	command := ""
+	commandArgs := args
+	if len(commandArgs) > 0 && commandArgs[0] == "connect" {
+		command = "connect"
+		commandArgs = commandArgs[1:]
+	}
+
+	configFile := *configPath
+	if configFile == "" && command == "" && len(commandArgs) > 0 {
+		configFile = commandArgs[0]
+		commandArgs = commandArgs[1:]
+	}
+	if configFile == "" {
+		configFile = "./config.yaml"
+	}
+
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level}))
 
 	cfg, err := loadOrSetupConfig(configFile, logger)
 	if err != nil {
 		log.Fatalf("load config: %v", err)
+	}
+
+	if command == "connect" {
+		if len(commandArgs) == 0 {
+			log.Fatalf("usage: %s [--config path] connect <provider>", os.Args[0])
+		}
+		providerName := commandArgs[0]
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := runConnect(ctx, cfg, logger, providerName, nil, nil); err != nil {
+			logger.Error("provider connectivity failed", "provider", providerName, "error", err)
+			os.Exit(1)
+		}
+		logger.Info("provider connectivity succeeded", "provider", providerName)
+		return
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -133,6 +167,83 @@ func withHSTS(h http.Handler, cfg app.Config) http.Handler {
 	return app.SecurityHeadersMiddleware(cfg.Server.TLS.HSTSMaxAge)(h)
 }
 
+func runConnect(ctx context.Context, cfg app.Config, logger *slog.Logger, providerName string, provided map[string]app.IdentityProvider, httpClient *http.Client) error {
+	if providerName == "" {
+		return errors.New("provider name required")
+	}
+
+	providers := provided
+	if providers == nil {
+		var err error
+		providers, err = app.BuildProviders(ctx, cfg, logger)
+		if err != nil {
+			return fmt.Errorf("build providers: %w", err)
+		}
+	}
+
+	provider, ok := providers[providerName]
+	if !ok {
+		return fmt.Errorf("provider %s not configured", providerName)
+	}
+
+	state := randomHex(8)
+	nonce := randomHex(8)
+	authURL := provider.AuthCodeURL(state, nonce, "", "")
+	logger.Info("connect.start", "provider", providerName, "auth_url", authURL)
+	logger.Info("connect.instructions", "provider", providerName, "message", "Open auth_url in a browser to perform interactive login if needed", "auth_url", authURL)
+
+	client := httpClient
+	if client == nil {
+		client = &http.Client{Timeout: 30 * time.Second}
+	}
+
+	originalRedirect := client.CheckRedirect
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		step := len(via) + 1
+		logger.Info("connect.redirect", "step", step, "url", req.URL.String())
+		if len(via) >= 10 {
+			return fmt.Errorf("too many redirects (%d)", len(via))
+		}
+		if originalRedirect != nil {
+			return originalRedirect(req, via)
+		}
+		return nil
+	}
+	defer func() { client.CheckRedirect = originalRedirect }()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, authURL, nil)
+	if err != nil {
+		return fmt.Errorf("create authorize request: %w", err)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("call authorize endpoint: %w", err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1024))
+
+	logger.Info("connect.result", "status", resp.StatusCode, "effective_url", resp.Request.URL.String())
+
+	switch {
+	case resp.StatusCode >= 400:
+		return fmt.Errorf("provider returned %s for %s", resp.Status, resp.Request.URL.String())
+	case resp.StatusCode >= 300:
+		return fmt.Errorf("unexpected additional redirect (status %d)", resp.StatusCode)
+	}
+
+	logger.Info("connect.success", "provider", providerName, "message", "Reached provider login endpoint")
+	return nil
+}
+
+func randomHex(n int) string {
+	buf := make([]byte, n)
+	if _, err := rand.Read(buf); err != nil {
+		return fmt.Sprintf("%x", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(buf)
+}
+
 func loadOrSetupConfig(path string, logger *slog.Logger) (app.Config, error) {
 	if _, err := os.Stat(path); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -140,6 +251,7 @@ func loadOrSetupConfig(path string, logger *slog.Logger) (app.Config, error) {
 		}
 		return app.Config{}, fmt.Errorf("stat config: %w", err)
 	}
+	logger.Debug("loading config", "path", path)
 	return app.LoadConfig(path)
 }
 
@@ -194,7 +306,8 @@ func runSetup(path string, logger *slog.Logger) (app.Config, error) {
 	upstreamClientSecret := askRequired(reader, "Gateway app registration client secret")
 
 	cfg.Providers.Default = "entra"
-	cfg.Providers.Entra.Issuer = fmt.Sprintf("https://login.microsoftonline.com/%s/v2.0", tenantID)
+	cfg.Providers.Entra.Issuer = "https://login.microsoftonline.com/common/v2.0"
+	cfg.Providers.Entra.TenantID = tenantID
 	cfg.Providers.Entra.ClientID = upstreamClientID
 	cfg.Providers.Entra.ClientSecret = upstreamClientSecret
 	cfg.Providers.Auth0 = app.UpstreamProvider{}
@@ -253,6 +366,21 @@ func askYesNo(reader *bufio.Reader, prompt string, def bool) bool {
 		default:
 			fmt.Println("Please enter 'y' or 'n'.")
 		}
+	}
+}
+
+func parseLogLevel(value string) (slog.Level, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "info":
+		return slog.LevelInfo, nil
+	case "debug":
+		return slog.LevelDebug, nil
+	case "warn", "warning":
+		return slog.LevelWarn, nil
+	case "error", "err":
+		return slog.LevelError, nil
+	default:
+		return 0, fmt.Errorf("unknown log level")
 	}
 }
 

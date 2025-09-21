@@ -51,12 +51,8 @@ func NewApp(ctx context.Context, cfg Config, logger *slog.Logger) (*App, error) 
 	}
 
 	defaultProvider := cfg.Providers.Default
-	if cfg.Server.DevMode {
-		if defaultProvider == "" {
-			defaultProvider = localProviderName
-		} else if _, ok := providers[defaultProvider]; !ok {
-			defaultProvider = localProviderName
-		}
+	if cfg.Server.DevMode && defaultProvider == "" {
+		defaultProvider = localProviderName
 	}
 
 	app := &App{
@@ -112,7 +108,7 @@ func (a *App) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	providerName := req.Provider
 	provider, ok := a.Providers[providerName]
 	if !ok {
-		if a.Config.Server.DevMode {
+		if a.Config.Server.DevMode && providerName == localProviderName {
 			req.Provider = localProviderName
 			if err := a.handleDevAuthorize(w, r, req); err != nil {
 				a.Logger.Error("dev authorize failed", "error", err)

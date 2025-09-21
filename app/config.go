@@ -79,6 +79,7 @@ type UpstreamProvider struct {
 	Issuer       string `yaml:"issuer"`
 	ClientID     string `yaml:"client_id"`
 	ClientSecret string `yaml:"client_secret"`
+	TenantID     string `yaml:"tenant_id"`
 }
 
 // TokenConfig captures token TTL and rotation knobs.
@@ -153,6 +154,11 @@ func defaultConfig() Config {
 		},
 		Sessions: SessionConfig{
 			TTL: 12 * time.Hour,
+		},
+		Providers: ProviderConfig{
+			Entra: UpstreamProvider{
+				Issuer: "https://login.microsoftonline.com/common/v2.0",
+			},
 		},
 	}
 }

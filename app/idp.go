@@ -31,7 +31,14 @@ func NewOIDCProvider(ctx context.Context, name string, upstream UpstreamProvider
 		return nil, fmt.Errorf("issuer required for provider %s", name)
 	}
 
-	op, err := oidc.NewProvider(ctx, upstream.Issuer)
+	issuer := upstream.Issuer
+	if upstream.TenantID != "" {
+		if resolved, ok := resolveAzureTenantIssuer(upstream.Issuer, upstream.TenantID); ok {
+			issuer = resolved
+		}
+	}
+
+	op, err := oidc.NewProvider(ctx, issuer)
 	if err != nil {
 		return nil, fmt.Errorf("discover provider %s: %w", name, err)
 	}
@@ -46,7 +53,12 @@ func NewOIDCProvider(ctx context.Context, name string, upstream UpstreamProvider
 
 	verifier := op.Verifier(&oidc.Config{ClientID: upstream.ClientID})
 
-	return &OIDCProvider{name: name, oauthConfig: oauthCfg, verifier: verifier, logger: logger}, nil
+	return &OIDCProvider{
+		name:        name,
+		oauthConfig: oauthCfg,
+		verifier:    verifier,
+		logger:      logger,
+	}, nil
 }
 
 // AuthCodeURL constructs the authorization request for upstream.
@@ -153,7 +165,7 @@ func BuildProviders(ctx context.Context, cfg Config, logger *slog.Logger) (map[s
 	if cfg.Providers.Default != "" {
 		if _, ok := providers[cfg.Providers.Default]; !ok {
 			if cfg.Server.DevMode {
-				logger.Warn("default provider unavailable, falling back to local", "provider", cfg.Providers.Default)
+				logger.Warn("default provider unavailable", "provider", cfg.Providers.Default)
 			} else {
 				return nil, fmt.Errorf("default provider %s not configured", cfg.Providers.Default)
 			}
@@ -169,4 +181,30 @@ func BuildProviders(ctx context.Context, cfg Config, logger *slog.Logger) (map[s
 func ClaimsToJSON(claims map[string]any) string {
 	b, _ := json.Marshal(claims)
 	return string(b)
+}
+
+func resolveAzureTenantIssuer(base, tenant string) (string, bool) {
+	if base == "" || tenant == "" {
+		return base, false
+	}
+	if !strings.Contains(base, "login.microsoftonline.com") {
+		return base, false
+	}
+
+	trimmed := strings.TrimSuffix(base, "/")
+	if strings.Contains(trimmed, "{tenant}") {
+		return strings.ReplaceAll(trimmed, "{tenant}", tenant), true
+	}
+
+	const segment = "/common"
+	idx := strings.Index(trimmed, segment)
+	if idx == -1 {
+		return base, false
+	}
+	prefix := trimmed[:idx]
+	suffix := trimmed[idx+len(segment):]
+	if len(suffix) > 0 && suffix[0] != '/' {
+		suffix = "/" + suffix
+	}
+	return prefix + "/" + tenant + suffix, true
 }

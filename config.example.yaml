@@ -38,7 +38,8 @@ providers:
     client_id: ""
     client_secret: ""
   entra:
-    issuer: "https://login.microsoftonline.com/YOUR_TENANT_ID/v2.0"
+    issuer: "https://login.microsoftonline.com/common/v2.0"
+    tenant_id: "YOUR_TENANT_ID"
     client_id: "ENTER_ENTRA_APP_CLIENT_ID"
     client_secret: "ENTER_ENTRA_APP_CLIENT_SECRET"
 
