@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -18,15 +19,20 @@ const localProviderName = "local"
 
 // App bundles runtime dependencies for the HTTP service.
 type App struct {
-	Config          Config
-	Logger          *slog.Logger
-	Store           *InMemoryStore
-	Sessions        *SessionManager
-	Tokens          *TokenService
-	JWKS            *JWKSManager
-	Clients         *ClientRegistry
-	Providers       map[string]IdentityProvider
-	DefaultProvider string
+	Config            Config
+	Logger            *slog.Logger
+	Store             *InMemoryStore
+	Sessions          *SessionManager
+	Tokens            *TokenService
+	JWKS              *JWKSManager
+	Clients           *ClientRegistry
+	Providers         map[string]IdentityProvider
+	DefaultProvider   string
+	Debug             *DebugAuthManager
+	DebugClientID     string
+	DebugRedirect     string
+	DebugClient       *Client
+	DebugClientSecret string
 }
 
 // NewApp wires together the application state from configuration.
@@ -65,6 +71,36 @@ func NewApp(ctx context.Context, cfg Config, logger *slog.Logger) (*App, error) 
 		Clients:         clients,
 		Providers:       providers,
 		DefaultProvider: defaultProvider,
+	}
+
+	if cfg.Server.DevMode {
+		debugRedirect := strings.TrimSuffix(cfg.Server.PublicURL, "/") + "/dev/auth/result"
+		var debugClient *Client
+		if len(cfg.Clients) > 0 {
+			firstID := cfg.Clients[0].ClientID
+			if c, ok := clients.Get(firstID); ok {
+				debugClient = c
+			}
+		}
+		if debugClient == nil {
+			debugClient = &Client{
+				ClientID:     debugClientID,
+				ClientSecret: "",
+				RedirectURIs: []string{debugRedirect},
+				Scopes:       []string{"openid", "profile", "email"},
+				Audiences:    []string{cfg.Tokens.AudienceDefault},
+				Public:       true,
+			}
+			clients.Add(debugClient)
+		}
+		if !slices.Contains(debugClient.RedirectURIs, debugRedirect) {
+			debugClient.RedirectURIs = append(debugClient.RedirectURIs, debugRedirect)
+		}
+		app.Debug = NewDebugAuthManager()
+		app.DebugClient = debugClient
+		app.DebugClientID = debugClient.ClientID
+		app.DebugClientSecret = debugClient.ClientSecret
+		app.DebugRedirect = debugRedirect
 	}
 
 	return app, nil
@@ -137,7 +173,7 @@ func (a *App) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	}
 	a.Store.SaveAuthRequest(loginReq)
 
-	redirectURL := provider.AuthCodeURL(loginReq.ID, req.Nonce, req.CodeChallenge, req.CodeChallengeMethod)
+	redirectURL := provider.AuthCodeURL(loginReq.ID, req.Nonce, "", "")
 	http.Redirect(w, r, redirectURL, http.StatusFound)
 }
 
@@ -192,17 +228,36 @@ func (a *App) handleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	isDebugFlow := a.Debug != nil && authReq.ClientID == a.DebugClientID
 	ctx := r.Context()
 	user, err := provider.Exchange(ctx, code, authReq.Nonce)
 	if err != nil {
+		if a.Debug != nil {
+			a.Debug.RecordProviderResponse(authReq.State, nil, fmt.Sprintf("exchange failed: %v", err))
+			a.Debug.RecordTokenResult(authReq.State, nil, fmt.Sprintf("exchange failed: %v", err))
+		}
 		a.Logger.Error("exchange failed", "error", err)
+		if isDebugFlow {
+			http.Redirect(w, r, a.debugResultURL(authReq.State, "upstream_exchange"), http.StatusSeeOther)
+			return
+		}
 		http.Error(w, "login failed", http.StatusBadGateway)
 		return
+	}
+	if a.Debug != nil {
+		a.Debug.RecordProviderResponse(authReq.State, &user, "")
 	}
 
 	session, err := a.Sessions.Create(w, r, providerName, user)
 	if err != nil {
 		a.Logger.Error("session create", "error", err)
+		if a.Debug != nil {
+			a.Debug.RecordTokenResult(authReq.State, nil, fmt.Sprintf("session create failed: %v", err))
+		}
+		if isDebugFlow {
+			http.Redirect(w, r, a.debugResultURL(authReq.State, "session_create"), http.StatusSeeOther)
+			return
+		}
 		http.Error(w, "session failure", http.StatusInternalServerError)
 		return
 	}
@@ -223,6 +278,13 @@ func (a *App) handleCallback(w http.ResponseWriter, r *http.Request) {
 
 	if err := a.completeAuthorize(w, r, req, session); err != nil {
 		a.Logger.Error("callback issue code", "error", err)
+		if a.Debug != nil {
+			a.Debug.RecordTokenResult(authReq.State, nil, fmt.Sprintf("complete authorize failed: %v", err))
+		}
+		if isDebugFlow {
+			http.Redirect(w, r, a.debugResultURL(authReq.State, "issue_code"), http.StatusSeeOther)
+			return
+		}
 		oauthError(w, req.RedirectURI, req.State, "server_error", "failed to issue code")
 		return
 	}

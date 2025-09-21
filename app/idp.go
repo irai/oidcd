@@ -43,11 +43,16 @@ func NewOIDCProvider(ctx context.Context, name string, upstream UpstreamProvider
 		return nil, fmt.Errorf("discover provider %s: %w", name, err)
 	}
 
+	endpoint := op.Endpoint()
+	if upstream.ClientSecret == "" {
+		endpoint.AuthStyle = oauth2.AuthStyleInParams
+	}
+
 	oauthCfg := &oauth2.Config{
 		ClientID:     upstream.ClientID,
 		ClientSecret: upstream.ClientSecret,
 		RedirectURL:  redirect,
-		Endpoint:     op.Endpoint(),
+		Endpoint:     endpoint,
 		Scopes:       []string{oidc.ScopeOpenID, "profile", "email"},
 	}
 

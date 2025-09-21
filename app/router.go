@@ -25,6 +25,14 @@ func (a *App) Routes() http.Handler {
 	r.Get("/authorize", a.handleAuthorize)
 	r.Get("/callback/{idp}", a.handleCallback)
 
+	if a.Config.Server.DevMode {
+		r.Get("/dev/auth", a.handleDevAuthIndex)
+		r.Post("/dev/auth/start", a.handleDevAuthStart)
+		r.Get("/dev/auth/flow/{id}", a.handleDevAuthFlow)
+		r.Post("/dev/auth/flow/{id}/proceed", a.handleDevAuthProceed)
+		r.Get("/dev/auth/result", a.handleDevAuthResult)
+	}
+
 	r.Post("/token", a.handleToken)
 	r.Get("/userinfo", a.handleUserInfo)
 	r.Post("/introspect", a.handleIntrospect)

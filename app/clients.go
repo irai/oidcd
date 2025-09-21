@@ -38,6 +38,11 @@ func (cr *ClientRegistry) Get(id string) (*Client, bool) {
 	return client, ok
 }
 
+// Add registers a client in the registry (used for dev helpers).
+func (cr *ClientRegistry) Add(client *Client) {
+	cr.clients[client.ClientID] = client
+}
+
 // Authenticate validates client credentials (or public client PKCE use).
 func (cr *ClientRegistry) Authenticate(id, secret string) (*Client, error) {
 	client, ok := cr.clients[id]
