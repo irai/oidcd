@@ -23,7 +23,7 @@ import (
 	"golang.org/x/crypto/acme/autocert"
 	"gopkg.in/yaml.v3"
 
-	"oidcd/app"
+	"oidcd/server"
 )
 
 func main() {
@@ -79,7 +79,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	application, err := app.NewApp(ctx, cfg, logger)
+	application, err := server.NewApp(ctx, cfg, logger)
 	if err != nil {
 		log.Fatalf("init app: %v", err)
 	}
@@ -160,14 +160,14 @@ func redirectToHTTPS(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, target, http.StatusMovedPermanently)
 }
 
-func withHSTS(h http.Handler, cfg app.Config) http.Handler {
+func withHSTS(h http.Handler, cfg server.Config) http.Handler {
 	if cfg.Server.DevMode {
 		return h
 	}
-	return app.SecurityHeadersMiddleware(cfg.Server.TLS.HSTSMaxAge)(h)
+	return server.SecurityHeadersMiddleware(cfg.Server.TLS.HSTSMaxAge)(h)
 }
 
-func runConnect(ctx context.Context, cfg app.Config, logger *slog.Logger, providerName string, provided map[string]app.IdentityProvider, httpClient *http.Client) error {
+func runConnect(ctx context.Context, cfg server.Config, logger *slog.Logger, providerName string, provided map[string]server.IdentityProvider, httpClient *http.Client) error {
 	if providerName == "" {
 		return errors.New("provider name required")
 	}
@@ -175,7 +175,7 @@ func runConnect(ctx context.Context, cfg app.Config, logger *slog.Logger, provid
 	providers := provided
 	if providers == nil {
 		var err error
-		providers, err = app.BuildProviders(ctx, cfg, logger)
+		providers, err = server.BuildProviders(ctx, cfg, logger)
 		if err != nil {
 			return fmt.Errorf("build providers: %w", err)
 		}
@@ -244,23 +244,23 @@ func randomHex(n int) string {
 	return hex.EncodeToString(buf)
 }
 
-func loadOrSetupConfig(path string, logger *slog.Logger) (app.Config, error) {
+func loadOrSetupConfig(path string, logger *slog.Logger) (server.Config, error) {
 	if _, err := os.Stat(path); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return runSetup(path, logger)
 		}
-		return app.Config{}, fmt.Errorf("stat config: %w", err)
+		return server.Config{}, fmt.Errorf("stat config: %w", err)
 	}
 	logger.Debug("loading config", "path", path)
-	return app.LoadConfig(path)
+	return server.LoadConfig(path)
 }
 
-func runSetup(path string, logger *slog.Logger) (app.Config, error) {
+func runSetup(path string, logger *slog.Logger) (server.Config, error) {
 	reader := bufio.NewReader(os.Stdin)
 	fmt.Printf("No configuration file found at %s.\n", path)
 	fmt.Println("Starting guided setup for Microsoft Entra ID (Azure AD). Press Enter to accept defaults.")
 
-	cfg := app.DefaultConfig()
+	cfg := server.DefaultConfig()
 
 	devMode := askYesNo(reader, "Run in development mode?", true)
 	cfg.Server.DevMode = devMode
@@ -293,7 +293,7 @@ func runSetup(path string, logger *slog.Logger) (app.Config, error) {
 	redirect := ask(reader, "Client redirect URI", "http://127.0.0.1:3000/callback")
 	redirects := normalizeList(redirect, []string{"http://127.0.0.1:3000/callback"})
 
-	cfg.Clients = []app.ClientConfig{{
+	cfg.Clients = []server.ClientConfig{{
 		ClientID:     clientID,
 		ClientSecret: "",
 		RedirectURIs: redirects,
@@ -310,14 +310,14 @@ func runSetup(path string, logger *slog.Logger) (app.Config, error) {
 	cfg.Providers.Entra.TenantID = tenantID
 	cfg.Providers.Entra.ClientID = upstreamClientID
 	cfg.Providers.Entra.ClientSecret = upstreamClientSecret
-	cfg.Providers.Auth0 = app.UpstreamProvider{}
+	cfg.Providers.Auth0 = server.UpstreamProvider{}
 
 	if err := writeConfigFile(path, cfg); err != nil {
-		return app.Config{}, err
+		return server.Config{}, err
 	}
 	logger.Info("configuration created", "path", path)
 
-	return app.LoadConfig(path)
+	return server.LoadConfig(path)
 }
 
 func ask(reader *bufio.Reader, prompt, def string) string {
@@ -401,7 +401,7 @@ func normalizeList(input string, fallback []string) []string {
 	return out
 }
 
-func writeConfigFile(path string, cfg app.Config) error {
+func writeConfigFile(path string, cfg server.Config) error {
 	data, err := yaml.Marshal(cfg)
 	if err != nil {
 		return fmt.Errorf("marshal config: %w", err)

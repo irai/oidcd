@@ -8,7 +8,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"oidcd/app"
+	"oidcd/server"
 )
 
 type stubProvider struct {
@@ -19,12 +19,12 @@ func (s *stubProvider) AuthCodeURL(state, nonce, codeChallenge, method string) s
 	return s.url
 }
 
-func (s *stubProvider) Exchange(ctx context.Context, code, expectedNonce string) (app.ProviderUser, error) {
-	return app.ProviderUser{}, nil
+func (s *stubProvider) Exchange(ctx context.Context, code, expectedNonce string) (server.ProviderUser, error) {
+	return server.ProviderUser{}, nil
 }
 
 func TestRunConnectSuccess(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/start":
 			http.Redirect(w, r, "/login", http.StatusFound)
@@ -35,13 +35,13 @@ func TestRunConnectSuccess(t *testing.T) {
 			w.WriteHeader(http.StatusNotFound)
 		}
 	}))
-	defer server.Close()
+	defer srv.Close()
 
-	providers := map[string]app.IdentityProvider{
-		"stub": &stubProvider{url: server.URL + "/start"},
+	providers := map[string]server.IdentityProvider{
+		"stub": &stubProvider{url: srv.URL + "/start"},
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	cfg := app.DefaultConfig()
+	cfg := server.DefaultConfig()
 
 	if err := runConnect(context.Background(), cfg, logger, "stub", providers, nil); err != nil {
 		t.Fatalf("runConnect returned error: %v", err)
@@ -49,16 +49,16 @@ func TestRunConnectSuccess(t *testing.T) {
 }
 
 func TestRunConnectFailureStatus(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
-	defer server.Close()
+	defer srv.Close()
 
-	providers := map[string]app.IdentityProvider{
-		"stub": &stubProvider{url: server.URL},
+	providers := map[string]server.IdentityProvider{
+		"stub": &stubProvider{url: srv.URL},
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	cfg := app.DefaultConfig()
+	cfg := server.DefaultConfig()
 
 	if err := runConnect(context.Background(), cfg, logger, "stub", providers, nil); err == nil {
 		t.Fatalf("expected error but got nil")
@@ -67,9 +67,9 @@ func TestRunConnectFailureStatus(t *testing.T) {
 
 func TestRunConnectMissingProvider(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	cfg := app.DefaultConfig()
+	cfg := server.DefaultConfig()
 
-	if err := runConnect(context.Background(), cfg, logger, "missing", map[string]app.IdentityProvider{}, nil); err == nil {
+	if err := runConnect(context.Background(), cfg, logger, "missing", map[string]server.IdentityProvider{}, nil); err == nil {
 		t.Fatalf("expected error for missing provider")
 	}
 }

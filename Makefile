@@ -3,10 +3,10 @@ APP=token-gateway
 .PHONY: run build tidy test lint
 
 run:
-	go run ./cmd/gateway
+	go run .
 
 build:
-	go build -o bin/$(APP) ./cmd/gateway
+	go build -o bin/$(APP) .
 
 tidy:
 	go mod tidy

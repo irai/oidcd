@@ -182,11 +182,11 @@ See `docs/README.md` for a complete example and context helpers.
 
 ## Directory Layout
 ```
-cmd/
-  gateway/         # main entrypoint for OIDC gateway (TLS + process wiring)
-  client/          # test client application demonstrating OIDC integration
-app/               # router, handlers, storage, sessions, tokens, jwks
+main.go            # OIDC gateway server entrypoint (TLS + process wiring)
+server/            # router, handlers, storage, sessions, tokens, jwks
 client/            # SDK for microservices (validator + middleware)
+cmd/
+  client/          # test client application demonstrating OIDC integration
 docs/              # usage examples and integration notes
 ```
 

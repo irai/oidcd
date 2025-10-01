@@ -4,7 +4,7 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -o /out/token-gateway ./cmd/gateway
+RUN CGO_ENABLED=0 GOOS=linux go build -o /out/token-gateway .
 
 FROM alpine:3.19
 RUN addgroup -S gateway && adduser -S gateway -G gateway
