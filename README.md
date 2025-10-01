@@ -1,14 +1,40 @@
 # Go OIDC Token Gateway
 
-A lightweight OIDC/OAuth2 authorization server that fronts upstream IdPs (Auth0 or Microsoft Entra) and mints first-party JWT access tokens for internal microservices. It maintains browser sessions, rotates refresh tokens, serves JWKS, and ships with a Go SDK for downstream services.
+A lightweight OIDC/OAuth2 authorization server that fronts upstream IdPs (Auth0 or Microsoft Entra) and mints first-party JWT access tokens for internal microservices. It acts as an edge gateway with TLS termination, reverse proxy capabilities, and centralized authentication.
 
 ## Features
-- Authorization Code + PKCE relay to Auth0/Entra with local session reuse.
-- `/authorize`, `/token`, `/userinfo`, `/jwks.json`, `/introspect`, `/revoke`, and discovery metadata.
-- RS256 JWT signing with configurable rotation and JWKS publishing.
-- Autocert-powered TLS for production, HTTP-only loopback for development.
-- Go client SDK (`/client`) for JWKS caching, token validation, scope enforcement, and middleware helpers.
-- Test client application demonstrating OIDC integration.
+- **Edge Gateway**: Single entry point with TLS termination and host-based reverse proxy
+- **Authentication**: Authorization Code + PKCE relay to Auth0/Entra with local session reuse
+- **Token Management**: RS256 JWT signing, refresh token rotation, JWKS publishing
+- **OIDC Endpoints**: `/authorize`, `/token`, `/userinfo`, `/jwks.json`, `/introspect`, `/revoke`, discovery metadata
+- **SDK & Examples**: Go client SDK for token validation + working integration examples
+
+## Three Integration Patterns
+
+This gateway supports three common integration patterns:
+
+### 1. **BFF (Backend-For-Frontend)** - Web Applications
+For web apps that need user login. The BFF handles OAuth flow server-side and maintains HTTP-only session cookies.
+
+**Example:** `cmd/client/` - Web application with Microsoft 365 login
+
+**Use when:** Building web applications with user authentication
+
+### 2. **Microservice** - JWT Token Validation
+For backend APIs that validate JWT tokens on each request using the client SDK.
+
+**Example:** `cmd/backend/` - API service that validates and displays JWT claims
+
+**Use when:** Building internal APIs that need to verify authenticated requests
+
+### 3. **Reverse Proxy** - Gateway-Protected Services
+For services accessed through the gateway's reverse proxy with automatic authentication.
+
+**Configuration:** Host-based routing with optional JWT validation at the gateway
+
+**Use when:** Services should be protected at the edge without implementing auth themselves
+
+> **📘 See [AI_INTEGRATION_GUIDE.md](AI_INTEGRATION_GUIDE.md) for detailed integration instructions**
 
 ## Quick Start with Docker Compose
 
@@ -112,10 +138,17 @@ docker-compose down
    - `http://127.0.0.1:8080/callback/auth0`
    - `http://127.0.0.1:8080/callback/entra`
 
-3. Run locally:
+3. Build and run:
    ```bash
-   make run
+   go build -o token-gateway .
+   ./token-gateway config.yaml
    ```
+
+   Or run directly:
+   ```bash
+   go run . config.yaml
+   ```
+
    The gateway listens on `http://127.0.0.1:8080` in dev mode. When no upstream provider credentials are supplied, dev mode falls back to a built-in `local` user so the authorization code flow can complete without Auth0/Entra.
 
    Runtime usage accepts either the `-config` flag or a positional argument:
@@ -174,20 +207,15 @@ See `docs/README.md` for a complete example and context helpers.
 - **Development**: HTTP on `127.0.0.1:8080`, insecure cookies disabled. Ephemeral keys unless `keys.jwks_path` is set.
 - **Production**: Autocert handles ACME/LetsEncrypt certificates. Port `:80` redirects to HTTPS and serves ACME challenges, `:443` serves the gateway with strict TLS 1.2+ and HSTS.
 
-## Makefile Targets
-- `make run` – launch the dev gateway.
-- `make build` – compile the `token-gateway` binary.
-- `make test` – run unit tests once Go tooling is available.
-- `make tidy` – update module dependencies.
-
 ## Directory Layout
 ```
-main.go            # OIDC gateway server entrypoint (TLS + process wiring)
-server/            # router, handlers, storage, sessions, tokens, jwks
-client/            # SDK for microservices (validator + middleware)
+main.go                  # OIDC gateway server entrypoint (TLS + process wiring)
+server/                  # Core: router, handlers, storage, sessions, tokens, jwks, proxy
+client/                  # SDK for microservices (validator + middleware)
 cmd/
-  client/          # test client application demonstrating OIDC integration
-docs/              # usage examples and integration notes
+  client/                # Example: BFF pattern (web app with login)
+  backend/               # Example: Microservice pattern (JWT validation)
+AI_INTEGRATION_GUIDE.md  # Integration guide for AI assistants
 ```
 
 ## Token Claims
