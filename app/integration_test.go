@@ -1,4 +1,4 @@
-package system_test
+package app
 
 import (
 	"context"
@@ -15,7 +15,6 @@ import (
 	"testing"
 	"time"
 
-	"oidcd/app"
 	"oidcd/client"
 )
 
@@ -26,7 +25,7 @@ type stubIdentityProvider struct {
 }
 
 type issuedAuth struct {
-	user  app.ProviderUser
+	user  ProviderUser
 	nonce string
 }
 
@@ -48,7 +47,7 @@ func (s *stubIdentityProvider) AuthCodeURL(state, nonce, codeChallenge, method s
 	}
 	code := fmt.Sprintf("code-%d", time.Now().UnixNano())
 	s.issued[code] = issuedAuth{
-		user: app.ProviderUser{
+		user: ProviderUser{
 			Subject: "user-123",
 			Email:   "user@example.com",
 			Name:    "Test User",
@@ -59,32 +58,32 @@ func (s *stubIdentityProvider) AuthCodeURL(state, nonce, codeChallenge, method s
 	return fmt.Sprintf("%s/callback/stub?code=%s&state=%s", s.callbackBase, code, state)
 }
 
-func (s *stubIdentityProvider) Exchange(ctx context.Context, code, expectedNonce string) (app.ProviderUser, error) {
+func (s *stubIdentityProvider) Exchange(ctx context.Context, code, expectedNonce string) (ProviderUser, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	issued, ok := s.issued[code]
 	if !ok {
-		return app.ProviderUser{}, fmt.Errorf("unknown code %s", code)
+		return ProviderUser{}, fmt.Errorf("unknown code %s", code)
 	}
 	delete(s.issued, code)
 	if expectedNonce != "" && issued.nonce != expectedNonce {
-		return app.ProviderUser{}, fmt.Errorf("nonce mismatch")
+		return ProviderUser{}, fmt.Errorf("nonce mismatch")
 	}
 	return issued.user, nil
 }
 
-type systemSetup struct {
+type integrationSetup struct {
 	t            *testing.T
 	logger       *slog.Logger
-	cfg          app.Config
+	cfg          Config
 	stubIDP      *stubIdentityProvider
 	gateway      *httptest.Server
 	micro        *httptest.Server
 	clientSrv    *httptest.Server
 	httpClient   *http.Client
-	tokens       *app.TokenService
-	store        *app.InMemoryStore
-	jwks         *app.JWKSManager
+	tokens       *TokenService
+	store        *InMemoryStore
+	jwks         *JWKSManager
 	codeCh       chan url.Values
 	clientID     string
 	clientSecret string
@@ -92,11 +91,11 @@ type systemSetup struct {
 	state        string
 }
 
-func newSystemSetup(t *testing.T, modify func(*app.Config)) *systemSetup {
+func newIntegrationSetup(t *testing.T, modify func(*Config)) *integrationSetup {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
-	setup := &systemSetup{
+	setup := &integrationSetup{
 		t:      t,
 		logger: logger,
 		codeCh: make(chan url.Values, 1),
@@ -112,10 +111,10 @@ func newSystemSetup(t *testing.T, modify func(*app.Config)) *systemSetup {
 	}))
 	setup.redirectURI = setup.clientSrv.URL + "/callback"
 
-	cfg := app.DefaultConfig()
+	cfg := DefaultConfig()
 	cfg.Server.DevMode = true
 	cfg.Server.PublicURL = "http://gateway.test"
-	cfg.Clients = []app.ClientConfig{{
+	cfg.Clients = []ClientConfig{{
 		ClientID:     "test-client",
 		ClientSecret: "supersecret",
 		RedirectURIs: []string{setup.redirectURI},
@@ -137,20 +136,20 @@ func newSystemSetup(t *testing.T, modify func(*app.Config)) *systemSetup {
 	setup.clientID = cfg.Clients[0].ClientID
 	setup.clientSecret = cfg.Clients[0].ClientSecret
 
-	store := app.NewInMemoryStore()
-	jwks, err := app.NewJWKSManager(cfg.Keys, logger)
+	store := NewInMemoryStore()
+	jwks, err := NewJWKSManager(cfg.Keys, logger)
 	if err != nil {
 		t.Fatalf("jwks manager: %v", err)
 	}
-	tokens := app.NewTokenService(cfg, store, jwks, logger)
-	sessions := app.NewSessionManager(cfg, store, logger)
-	clients, err := app.NewClientRegistry(cfg.Clients)
+	tokens := NewTokenService(cfg, store, jwks, logger)
+	sessions := NewSessionManager(cfg, store, logger)
+	clients, err := NewClientRegistry(cfg.Clients)
 	if err != nil {
 		t.Fatalf("client registry: %v", err)
 	}
 
 	stubIDP := newStubIdentityProvider()
-	application := &app.App{
+	application := &App{
 		Config:          cfg,
 		Logger:          logger,
 		Store:           store,
@@ -158,7 +157,7 @@ func newSystemSetup(t *testing.T, modify func(*app.Config)) *systemSetup {
 		Tokens:          tokens,
 		JWKS:            jwks,
 		Clients:         clients,
-		Providers:       map[string]app.IdentityProvider{"stub": stubIDP},
+		Providers:       map[string]IdentityProvider{"stub": stubIDP},
 		DefaultProvider: "stub",
 	}
 
@@ -204,13 +203,13 @@ func newSystemSetup(t *testing.T, modify func(*app.Config)) *systemSetup {
 	return setup
 }
 
-func (s *systemSetup) Close() {
+func (s *integrationSetup) Close() {
 	s.micro.Close()
 	s.gateway.Close()
 	s.clientSrv.Close()
 }
 
-func (s *systemSetup) Authorize(scope string) string {
+func (s *integrationSetup) Authorize(scope string) string {
 	s.t.Helper()
 	params := url.Values{}
 	params.Set("response_type", "code")
@@ -267,7 +266,7 @@ func (s *systemSetup) Authorize(scope string) string {
 	return code
 }
 
-func (s *systemSetup) Exchange(code string) app.TokenResponse {
+func (s *integrationSetup) Exchange(code string) TokenResponse {
 	s.t.Helper()
 	form := url.Values{}
 	form.Set("grant_type", "authorization_code")
@@ -290,14 +289,14 @@ func (s *systemSetup) Exchange(code string) app.TokenResponse {
 		s.t.Fatalf("token endpoint returned %d", resp.StatusCode)
 	}
 
-	var tokenResp app.TokenResponse
+	var tokenResp TokenResponse
 	if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
 		s.t.Fatalf("decode token response: %v", err)
 	}
 	return tokenResp
 }
 
-func (s *systemSetup) Refresh(refreshToken string) app.TokenResponse {
+func (s *integrationSetup) Refresh(refreshToken string) TokenResponse {
 	s.t.Helper()
 	form := url.Values{}
 	form.Set("grant_type", "refresh_token")
@@ -319,14 +318,14 @@ func (s *systemSetup) Refresh(refreshToken string) app.TokenResponse {
 		s.t.Fatalf("refresh token status %d", resp.StatusCode)
 	}
 
-	var refreshResp app.TokenResponse
+	var refreshResp TokenResponse
 	if err := json.NewDecoder(resp.Body).Decode(&refreshResp); err != nil {
 		s.t.Fatalf("decode refresh response: %v", err)
 	}
 	return refreshResp
 }
 
-func (s *systemSetup) CallMicro(token string) (*http.Response, error) {
+func (s *integrationSetup) CallMicro(token string) (*http.Response, error) {
 	req, err := http.NewRequest(http.MethodGet, s.micro.URL+"/protected", nil)
 	if err != nil {
 		return nil, err
@@ -335,7 +334,7 @@ func (s *systemSetup) CallMicro(token string) (*http.Response, error) {
 	return s.httpClient.Do(req)
 }
 
-func (s *systemSetup) UserInfo(token string) (map[string]any, int, error) {
+func (s *integrationSetup) UserInfo(token string) (map[string]any, int, error) {
 	req, err := http.NewRequest(http.MethodGet, s.gateway.URL+"/userinfo", nil)
 	if err != nil {
 		return nil, 0, err
@@ -354,7 +353,7 @@ func (s *systemSetup) UserInfo(token string) (map[string]any, int, error) {
 	return body, resp.StatusCode, nil
 }
 
-func (s *systemSetup) Introspect(token string) (map[string]any, int, error) {
+func (s *integrationSetup) Introspect(token string) (map[string]any, int, error) {
 	form := url.Values{}
 	form.Set("token", token)
 
@@ -378,8 +377,8 @@ func (s *systemSetup) Introspect(token string) (map[string]any, int, error) {
 	return body, resp.StatusCode, nil
 }
 
-func TestAuthorizationCodeFlowEndToEnd(t *testing.T) {
-	setup := newSystemSetup(t, nil)
+func TestIntegrationAuthorizationCodeFlow(t *testing.T) {
+	setup := newIntegrationSetup(t, nil)
 	defer setup.Close()
 
 	code := setup.Authorize("openid profile email")
@@ -464,30 +463,42 @@ func TestAuthorizationCodeFlowEndToEnd(t *testing.T) {
 	}
 }
 
-func TestAuthorizationCodeFlowInvalidToken(t *testing.T) {
-	setup := newSystemSetup(t, nil)
+func TestIntegrationInvalidToken(t *testing.T) {
+	setup := newIntegrationSetup(t, nil)
 	defer setup.Close()
 
 	code := setup.Authorize("openid profile email")
 	tokenResp := setup.Exchange(code)
 
-	if len(tokenResp.AccessToken) < 2 {
-		t.Fatalf("access token too short to tamper")
-	}
-	tampered := tokenResp.AccessToken[:len(tokenResp.AccessToken)-1] + "x"
-
-	resp, err := setup.CallMicro(tampered)
+	// Test with completely invalid token (not even JWT format)
+	resp, err := setup.CallMicro("invalid-token")
 	if err != nil {
 		t.Fatalf("call microservice: %v", err)
 	}
-	defer resp.Body.Close()
+	resp.Body.Close()
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("expected 401 for invalid token, got %d", resp.StatusCode)
 	}
+
+	// Test with tampered token (breaks signature)
+	if len(tokenResp.AccessToken) < 10 {
+		t.Fatalf("access token too short to tamper")
+	}
+	// Replace last character to break the signature
+	tampered := tokenResp.AccessToken[:len(tokenResp.AccessToken)-1] + "x"
+
+	resp, err = setup.CallMicro(tampered)
+	if err != nil {
+		t.Fatalf("call microservice with tampered token: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for tampered token, got %d", resp.StatusCode)
+	}
 }
 
-func TestAuthorizationCodeFlowExpiredToken(t *testing.T) {
-	setup := newSystemSetup(t, func(cfg *app.Config) {
+func TestIntegrationExpiredToken(t *testing.T) {
+	setup := newIntegrationSetup(t, func(cfg *Config) {
 		cfg.Tokens.AccessTTL = -1 * time.Minute
 	})
 	defer setup.Close()
