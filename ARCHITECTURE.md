@@ -81,14 +81,33 @@
 
 ## 6. Token Model
 
+**ID Token (JWT RS256) — OIDC Specification**
+
+When `openid` scope is requested, the gateway returns an ID token containing:
+
+* Header: `alg=RS256`, `kid=<current key>`.
+* Standard claims: `iss=<gateway issuer>`, `sub=<stable user id>`, `aud=<client_id>`, `iat`, `exp (5–10m)`, `nonce` (if provided).
+* Profile claims: `email`, `name`, `preferred_username` (sourced from upstream IdP user profile).
+* Custom claims: `idp` (identity provider name: `auth0`, `entra`, or `local`).
+
+The ID token is intended for the client application to learn about the authenticated user. It is **not** used for API authorization.
+
 **Access Token (JWT RS256)**
 
 * Header: `alg=RS256`, `kid=<current key>`.
-* Claims: `iss=<gateway issuer>`, `sub=<stable user id>`, `aud=<service or suite>`, `scope=<space-delimited>`, `iat`, `exp (5–10m)`, `jti`. Optional: `org`, `tenant`, `plan`.
+* Claims: `iss=<gateway issuer>`, `sub=<stable user id>`, `aud=<service or suite>`, `scope=<space-delimited>`, `iat`, `exp (5–10m)`, `jti`, `client_id`, `idp`.
+* Used for authorizing API requests to downstream microservices.
 
 **Refresh Token**
 
-* Opaque with rotation (server store) **or** JWT with server‑side status; rotation + replay detection.
+* Opaque token with rotation (server store); rotation + replay detection.
+* Used to obtain new access tokens without re-authenticating the user.
+
+**User Profile Storage**
+
+* The gateway stores minimal user profile information (`email`, `name`) in memory after upstream IdP authentication.
+* Profile data is keyed by `<idp>:<subject>` and retrieved when minting ID tokens.
+* Profile information is also available via the `/userinfo` endpoint.
 
 **JWKS & Keys**
 
@@ -102,10 +121,17 @@
 **End‑User (Auth Code + PKCE)**
 
 1. Browser hits Web App (BFF) protected page.
-2. BFF redirects to `GET /authorize` on the gateway.
+2. BFF redirects to `GET /authorize` on the gateway with `scope=openid profile email`.
 3. Gateway **reuses session** if valid; otherwise redirects to IdP login.
-4. After IdP login, `GET /callback/{idp}` on gateway; gateway creates local session and issues an authorization code for the client.
-5. BFF exchanges code at `/token` → gets **Access Token (JWT)** + **Refresh Token**.
+4. After IdP login, `GET /callback/{idp}` on gateway; gateway:
+   - Exchanges code with upstream IdP
+   - Retrieves user profile (email, name) from upstream IdP
+   - Stores user profile in memory
+   - Creates local gateway session
+   - Issues authorization code for the client
+5. BFF exchanges code at `/token` → gets **ID Token (JWT)**, **Access Token (JWT)**, and **Refresh Token**.
+   - ID Token contains user identity claims (email, name, preferred_username)
+   - Access Token is used for API authorization
 6. BFF sets its own session cookie and calls microservices with the Access Token.
 
 **Service‑to‑Service (Client Credentials)**
@@ -222,6 +248,23 @@ r.Get("/orders/{id}", func(w http.ResponseWriter, r *http.Request) {
 * **Dev loop**: run gateway in dev mode; register loopback redirect URIs with IdPs.
 * **Unit tests**: JWT claims and signature validation, refresh rotation, session reuse.
 * **E2E flow**: headless browser (or curl) across: BFF → /authorize → IdP → callback → /token → API call.
+* **Test client**: A reference implementation is provided in `cmd/client/` demonstrating the full OIDC flow.
+
+**Test Client Application**
+
+A sample web application is included to demonstrate and verify the OIDC integration:
+
+* Location: `cmd/client/main.go`
+* Demonstrates: Authorization Code flow with PKCE, ID token validation, user profile display
+* Run with Docker: `docker-compose up --build`
+* Access at: `http://localhost:3001` (when using Docker Compose)
+
+The test client:
+1. Redirects users to the gateway `/authorize` endpoint
+2. Handles the callback with authorization code
+3. Exchanges code for tokens (ID token, access token, refresh token)
+4. Validates the ID token
+5. Displays user information from token claims (email, name, preferred_username)
 
 **Example curl: obtain token (client credentials)**
 
@@ -269,7 +312,17 @@ curl -X POST https://auth.example.com/token \
 
 ### Quick Start for Developers
 
+**Using Docker Compose (Recommended for Testing)**
+
+1. Configure `config.yaml` with your Microsoft Entra ID credentials
+2. Run `docker-compose up --build`
+3. Access the test client at `http://localhost:3001`
+4. Click "Login with OIDC" to test the full authentication flow
+5. Verify ID token claims include email, name, and preferred_username
+
+**Manual Development Setup**
+
 1. Run the gateway in dev mode; set Auth0/Entra credentials in `config.yaml`.
 2. In your microservice, import the client SDK and protect routes with `RequireAuthMiddleware` + required scopes.
 3. In your BFF, implement the OIDC code flow against the gateway and keep tokens server‑side; set an httpOnly session cookie.
-4. Validate everything locally using the sample curl and the sequence diagram provided.
+4. Validate everything locally using the test client (`cmd/client/`) or sample curl commands.

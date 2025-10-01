@@ -8,12 +8,110 @@ A lightweight OIDC/OAuth2 authorization server that fronts upstream IdPs (Auth0 
 - RS256 JWT signing with configurable rotation and JWKS publishing.
 - Autocert-powered TLS for production, HTTP-only loopback for development.
 - Go client SDK (`/client`) for JWKS caching, token validation, scope enforcement, and middleware helpers.
+- Test client application demonstrating OIDC integration.
 
-## Getting Started
-1. Run `token-gateway` without an existing config to launch the guided setup, or copy `config.example.yaml` to `config.yaml` and update issuer/clients/providers manually. The sample (and guided wizard) target Microsoft Entra ID—replace the tenant ID, client ID, and client secret with your app registration details.
+## Quick Start with Docker Compose
+
+The fastest way to test the OIDC gateway with Microsoft 365 is using Docker Compose:
+
+### Prerequisites
+1. Docker and Docker Compose installed
+2. Microsoft Entra ID app registration (see below)
+
+### Microsoft Entra ID Setup
+
+1. Go to [Azure Portal](https://portal.azure.com) → **Azure Active Directory** → **App registrations**
+2. Create a new app registration or use an existing one
+3. Under **Authentication**, add these redirect URIs:
+   - `http://localhost:8080/callback/entra` (for the gateway)
+4. Under **Certificates & secrets**, create a new client secret
+5. Note your **Application (client) ID** and **Directory (tenant) ID**
+
+### Configuration
+
+Create or update `config.yaml` with your Entra credentials:
+
+```yaml
+server:
+  public_url: http://localhost:8080
+  dev_listen_addr: 0.0.0.0:8080
+  dev_mode: true
+  cors:
+    client_origin_urls:
+      - http://localhost:3001
+
+clients:
+  - client_id: "webapp"
+    client_secret: ""
+    redirect_uris:
+      - http://localhost:3001/callback
+    scopes: ["openid", "profile", "email"]
+    audiences: ["ai-gateway"]
+
+providers:
+  default: "entra"
+  entra:
+    issuer: "https://login.microsoftonline.com/common/v2.0"
+    tenant_id: "YOUR_TENANT_ID"
+    client_id: "YOUR_ENTRA_APP_CLIENT_ID"
+    client_secret: "YOUR_ENTRA_APP_CLIENT_SECRET"
+```
+
+### Running the Stack
+
+Start both the gateway and test client:
+
+```bash
+docker-compose up --build
+```
+
+This starts:
+- **OIDC Gateway** on `http://localhost:8080`
+- **Test Client App** on `http://localhost:3001`
+
+### Testing the OIDC Flow
+
+1. Open your browser to `http://localhost:3001`
+2. Click "Login with OIDC"
+3. You'll be redirected to Microsoft 365 for authentication
+4. After login, you'll see your username, email, and full JWT claims
+5. Click "View Full Profile" to see all token details
+
+### Architecture
+
+```
+Browser <-> Client App (port 3001) <-> OIDC Gateway (port 8080) <-> Microsoft Entra ID
+```
+
+The test client demonstrates:
+- OAuth 2.0 Authorization Code flow with PKCE
+- JWT token validation
+- Extracting user information from ID token claims (email, name, preferred_username)
+
+### Docker Commands
+
+View logs:
+```bash
+docker-compose logs -f          # All services
+docker-compose logs -f oidcd    # Gateway only
+docker-compose logs -f client   # Client only
+```
+
+Stop services:
+```bash
+docker-compose down
+```
+
+## Local Development (Without Docker)
+
+### Getting Started
+
+1. Run `token-gateway` without an existing config to launch the guided setup, or copy `config.example.yaml` to `config.yaml` and update issuer/clients/providers manually.
+
 2. Register redirect URIs with your IdP (development defaults):
    - `http://127.0.0.1:8080/callback/auth0`
    - `http://127.0.0.1:8080/callback/entra`
+
 3. Run locally:
    ```bash
    make run
@@ -25,8 +123,6 @@ A lightweight OIDC/OAuth2 authorization server that fronts upstream IdPs (Auth0 
    token-gateway -config ./config.yaml
    token-gateway ./config.yaml
    ```
-
-   Config files use YAML; any line starting with `#` is treated as a comment so you can temporarily disable settings without deleting them.
 
 ### What `clients:` Means
 - Entries under `clients:` represent OAuth/OIDC applications that call `/authorize` and `/token`—for example your web app, SPA, CLI, or BFF that redirects users for login. Each registration lists its redirect URIs, permitted scopes, and target audiences.
@@ -78,13 +174,6 @@ See `docs/README.md` for a complete example and context helpers.
 - **Development**: HTTP on `127.0.0.1:8080`, insecure cookies disabled. Ephemeral keys unless `keys.jwks_path` is set.
 - **Production**: Autocert handles ACME/LetsEncrypt certificates. Port `:80` redirects to HTTPS and serves ACME challenges, `:443` serves the gateway with strict TLS 1.2+ and HSTS.
 
-### Docker
-```bash
-docker build -t token-gateway .
-docker run --rm -p 8080:8080 token-gateway
-```
-Override config by mounting a file and updating the entrypoint arguments if needed.
-
 ## Makefile Targets
 - `make run` – launch the dev gateway.
 - `make build` – compile the `token-gateway` binary.
@@ -93,8 +182,25 @@ Override config by mounting a file and updating the entrypoint arguments if need
 
 ## Directory Layout
 ```
-cmd/gateway        # main entrypoint (TLS + process wiring)
+cmd/
+  gateway/         # main entrypoint for OIDC gateway (TLS + process wiring)
+  client/          # test client application demonstrating OIDC integration
 app/               # router, handlers, storage, sessions, tokens, jwks
 client/            # SDK for microservices (validator + middleware)
 docs/              # usage examples and integration notes
 ```
+
+## Token Claims
+
+### ID Token (OIDC)
+When the `openid` scope is requested, the gateway returns an ID token containing:
+- Standard claims: `iss`, `sub`, `aud`, `exp`, `iat`, `nonce`
+- Profile claims: `email`, `name`, `preferred_username` (from upstream IdP)
+- Custom claims: `idp` (identity provider name)
+
+### Access Token (JWT)
+Access tokens contain:
+- Standard claims: `iss`, `sub`, `aud`, `exp`, `iat`, `jti`
+- Custom claims: `scope`, `client_id`, `idp`
+
+All tokens are signed with RS256 and can be validated using the JWKS endpoint at `/.well-known/jwks.json`.
