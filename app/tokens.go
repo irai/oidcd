@@ -282,16 +282,28 @@ func (ts *TokenService) buildAccessClaims(sub, clientID, audience, scope, idp st
 func (ts *TokenService) buildIDTokenClaims(sub, clientID, nonce, idp string) map[string]interface{} {
 	now := time.Now()
 	claims := map[string]interface{}{
-		"iss":   ts.issuer,
-		"sub":   sub,
-		"aud":   clientID,
-		"exp":   now.Add(ts.accessTTL).Unix(),
-		"iat":   now.Unix(),
-		"idp":   idp,
+		"iss": ts.issuer,
+		"sub": sub,
+		"aud": clientID,
+		"exp": now.Add(ts.accessTTL).Unix(),
+		"iat": now.Unix(),
+		"idp": idp,
 	}
 	if nonce != "" {
 		claims["nonce"] = nonce
 	}
+
+	// Add user profile information if available
+	if profile := ts.store.LookupUserProfile(sub); profile != nil {
+		if profile.Email != "" {
+			claims["email"] = profile.Email
+		}
+		if profile.Name != "" {
+			claims["name"] = profile.Name
+			claims["preferred_username"] = profile.Name
+		}
+	}
+
 	return claims
 }
 
