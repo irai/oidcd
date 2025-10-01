@@ -42,6 +42,42 @@ services:
       oidcd:
         condition: service_healthy
 
+  # Public backend service (no auth required)
+  backend1:
+    build:
+      context: .
+      dockerfile: cmd/backend/Dockerfile
+    container_name: backend1
+    environment:
+      - SERVICE_NAME=Public API Service
+      - LISTEN_ADDR=0.0.0.0:3000
+      - OIDC_ISSUER=http://oidcd:8080
+      - JWKS_URL=http://oidcd:8080/.well-known/jwks.json
+      - AUDIENCE=ai-gateway
+    networks:
+      - oidc-net
+    depends_on:
+      oidcd:
+        condition: service_healthy
+
+  # Protected backend service (requires JWT token)
+  backend2:
+    build:
+      context: .
+      dockerfile: cmd/backend/Dockerfile
+    container_name: backend2
+    environment:
+      - SERVICE_NAME=Protected Microservice
+      - LISTEN_ADDR=0.0.0.0:3000
+      - OIDC_ISSUER=http://oidcd:8080
+      - JWKS_URL=http://oidcd:8080/.well-known/jwks.json
+      - AUDIENCE=ai-gateway
+    networks:
+      - oidc-net
+    depends_on:
+      oidcd:
+        condition: service_healthy
+
 networks:
   oidc-net:
     driver: bridge

@@ -33,6 +33,7 @@ type App struct {
 	DebugRedirect     string
 	DebugClient       *Client
 	DebugClientSecret string
+	Proxy             *ProxyManager
 }
 
 // NewApp wires together the application state from configuration.
@@ -101,6 +102,15 @@ func NewApp(ctx context.Context, cfg Config, logger *slog.Logger) (*App, error) 
 		app.DebugClientID = debugClient.ClientID
 		app.DebugClientSecret = debugClient.ClientSecret
 		app.DebugRedirect = debugRedirect
+	}
+
+	// Initialize proxy if routes are configured
+	if len(cfg.Proxy.Routes) > 0 {
+		proxy, err := NewProxyManager(cfg.Proxy, tokens, logger)
+		if err != nil {
+			return nil, fmt.Errorf("init proxy: %w", err)
+		}
+		app.Proxy = proxy
 	}
 
 	return app, nil

@@ -19,6 +19,7 @@ type Config struct {
 	Providers ProviderConfig `yaml:"providers"`
 	Tokens    TokenConfig    `yaml:"tokens"`
 	Sessions  SessionConfig  `yaml:"sessions"`
+	Proxy     ProxyConfig    `yaml:"proxy"`
 }
 
 // ServerConfig controls listener, TLS, and HTTP concerns.
@@ -93,6 +94,23 @@ type TokenConfig struct {
 // SessionConfig drives the cookie-session behaviour.
 type SessionConfig struct {
 	TTL time.Duration `yaml:"ttl"`
+}
+
+// ProxyConfig defines reverse proxy routes for host-based routing.
+type ProxyConfig struct {
+	Routes []ProxyRoute `yaml:"routes"`
+}
+
+// ProxyRoute maps a hostname to a backend target.
+type ProxyRoute struct {
+	Host              string   `yaml:"host"`
+	Target            string   `yaml:"target"`
+	RequireAuth       bool     `yaml:"require_auth"`
+	RequiredScopes    []string `yaml:"required_scopes"`
+	StripPrefix       string   `yaml:"strip_prefix"`
+	PreserveHost      bool     `yaml:"preserve_host"`
+	Timeout           string   `yaml:"timeout"`
+	InsecureSkipVerify bool    `yaml:"insecure_skip_verify"`
 }
 
 // LoadConfig reads the YAML config file and merges environment overrides.
