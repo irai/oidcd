@@ -1,0 +1,47 @@
+version: '3.8'
+
+services:
+  oidcd:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: oidcd-gateway
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+    environment:
+      - OIDCD_CONFIG=/app/config.yaml
+    networks:
+      - oidc-net
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/.well-known/openid-configuration"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  client:
+    build:
+      context: .
+      dockerfile: cmd/client/Dockerfile
+    container_name: oidc-client
+    ports:
+      - "3001:3000"
+    environment:
+      - LISTEN_ADDR=0.0.0.0:3000
+      - OIDC_ISSUER=http://localhost:8080
+      - CLIENT_ID=webapp
+      - CLIENT_SECRET=
+      - REDIRECT_URL=http://localhost:3001/callback
+    extra_hosts:
+      - "localhost:host-gateway"
+    networks:
+      - oidc-net
+    depends_on:
+      oidcd:
+        condition: service_healthy
+
+networks:
+  oidc-net:
+    driver: bridge

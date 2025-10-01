@@ -33,3 +33,4 @@ go.work.sum
 .gitignore
 */config.yaml
 config.yaml
+.claude/settings.local.json

@@ -29,6 +29,7 @@ type TokenResponse struct {
 	ExpiresIn    int64  `json:"expires_in"`
 	RefreshToken string `json:"refresh_token,omitempty"`
 	Scope        string `json:"scope,omitempty"`
+	IDToken      string `json:"id_token,omitempty"`
 }
 
 // TokenService signs and validates gateway tokens.
@@ -77,6 +78,16 @@ func (ts *TokenService) MintForAuthorizationCode(ctx context.Context, code Autho
 		TokenType:   "Bearer",
 		ExpiresIn:   int64(ts.accessTTL.Seconds()),
 		Scope:       code.Scope,
+	}
+
+	// If openid scope is requested, generate and include an ID token
+	if strings.Contains(code.Scope, "openid") {
+		idTokenClaims := ts.buildIDTokenClaims(subject, client.ClientID, code.Nonce, code.IDP)
+		idToken, _, err := ts.jwks.Sign(idTokenClaims)
+		if err != nil {
+			return TokenResponse{}, err
+		}
+		resp.IDToken = idToken
 	}
 
 	if ts.refreshTTL > 0 {
@@ -266,6 +277,22 @@ func (ts *TokenService) buildAccessClaims(sub, clientID, audience, scope, idp st
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(ts.accessTTL)),
 		},
 	}
+}
+
+func (ts *TokenService) buildIDTokenClaims(sub, clientID, nonce, idp string) map[string]interface{} {
+	now := time.Now()
+	claims := map[string]interface{}{
+		"iss":   ts.issuer,
+		"sub":   sub,
+		"aud":   clientID,
+		"exp":   now.Add(ts.accessTTL).Unix(),
+		"iat":   now.Unix(),
+		"idp":   idp,
+	}
+	if nonce != "" {
+		claims["nonce"] = nonce
+	}
+	return claims
 }
 
 func (ts *TokenService) newRefreshToken(sessionID, clientID, userID, scope, audience, idp, parent string) RefreshToken {
