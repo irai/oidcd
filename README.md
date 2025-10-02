@@ -27,10 +27,10 @@ For backend APIs that validate JWT tokens on each request using the client SDK.
 
 **Use when:** Building internal APIs that need to verify authenticated requests
 
-### 3. **Reverse Proxy** - Gateway-Protected Services
-For services accessed through the gateway's reverse proxy with automatic authentication.
+### 3. **Reverse Proxy** - Gateway-Protected Services *(Enhanced)*
+For services accessed through the gateway's reverse proxy with automatic authentication and JWT injection.
 
-**Configuration:** Host-based routing with optional JWT validation at the gateway
+**Configuration:** Host-based routing with intelligent authentication detection, JWT token injection, and user claims mapping
 
 **Use when:** Services should be protected at the edge without implementing auth themselves
 
@@ -232,3 +232,268 @@ Access tokens contain:
 - Custom claims: `scope`, `client_id`, `idp`
 
 All tokens are signed with RS256 and can be validated using the JWKS endpoint at `/.well-known/jwks.json`.
+
+---
+
+## Enhanced Reverse Proxy Authentication 🚀
+
+The OIDC gateway provides **enhanced reverse proxy capabilities** that automatically handle authentication and inject JWT tokens into forwarded requests, enabling **zero-authentication backend services**.
+
+### Overview
+
+The enhanced proxy provides **zero-authentication backend services** by:
+1. **Automatically detecting** authentication method (Bearer token vs Session cookies)
+2. **Validating user authorization** against upstream IdP scopes
+3. **Injecting JWT tokens and user claims** into HTTP headers
+4. **Handling authentication redirects** intelligently for browsers vs APIs
+
+### Quick Start ⚡
+
+#### Minimal Configuration
+```yaml
+proxy:
+  routes:
+    # Simple authenticated service - intelligent defaults apply
+    - host: "api.example.local"
+      target: "http://backend-service:3000"
+      require_auth: true
+```
+
+The gateway automatically:
+- ✅ Detects Bearer tokens or session cookies
+- ✅ Injects JWT tokens as `X-Auth-Token` header  
+- ✅ Injects user claims as `X-User-*` headers
+- ✅ Skips authentication for `/health`, `/metrics` paths
+- ✅ Returns JSON errors for API calls, redirects for browsers
+
+#### Backend Service Implementation
+```go
+func handleProtectedAPI(w http.ResponseWriter, r *http.Request) {
+    // Gateway has already authenticated the user!
+    userID := r.Header.Get("X-User-ID")
+    userEmail := r.Header.Get("X-User-Email")
+    
+    response := map[string]string{
+        "message": "Protected data",
+        "user_id": userID,
+        "user_email": userEmail,
+    }
+    
+    json.NewEncoder(w).Encode(response)
+}
+```
+
+### Features 🎯
+
+#### 1. Intelligent Authentication Detection
+- **Bearer Token**: Detected from `Authorization` header
+- **Session Cookie**: Uses existing gateway session (`gw_session`)
+- **Auto-fallback**: Smart detection based on request patterns
+
+#### 2. Automatic JWT Injection
+Injects gateway-issued JWTs containing:
+- **User ID**: Stable identifier from upstream IdP
+- **Scopes**: Validated permissions from upstream IdP  
+- **Audience**: Target service hostname
+- **Short lifetime**: 10 minutes for security
+
+#### 3. User Claims Injection
+Maps upstream IdP claims to HTTP headers:
+```
+X-User-ID: user123
+X-User-Email: john.doe@company.com
+X-User-Name: John Doe
+X-Auth-Token: eyJhbGciOiJSUzI1NiJ9...
+X-Auth-Type: bearer
+X-User-Scopes: admin.read admin.write
+```
+
+#### 4. Smart Path Exclusions
+Automatically skips authentication for:
+- `/health`, `/healthz`, `/status`
+- `/metrics`, `/prometheus`
+- `/favicon.ico`, `/robots.txt`
+- `/static/*`, `/assets/*`
+
+#### 5. Intelligent Error Handling
+- **API Requests**: Returns JSON errors with status codes
+- **Browser Requests**: Redirects to authentication flow
+- **Scope Validation**: Returns `403 Forbidden` with details
+
+### Configuration Options ⚙️
+
+#### Basic Configuration
+```yaml
+proxy:
+  routes:
+    - host: "api.example.local"
+      target: "http://backend:3000"
+      require_auth: true
+      # Automatic: inject_jwt=true, inject_user_claims=true
+```
+
+#### Advanced Configuration
+```yaml
+proxy:
+  routes:
+    - host: "admin.example.local"
+      target: "http://admin-backend:3000"
+      require_auth: true
+      required_scopes: ["admin.read", "admin.write"]
+      
+      # JWT Injection
+      inject_jwt: true
+      jwt_header_name: "X-Admin-JWT"
+      
+      # User Claims Injection  
+      inject_user_claims: true
+      claims_headers:
+        email: "X-Admin-Email"
+        name: "X-Admin-Name"
+        idp: "X-Identity-Provider"
+      
+      # Special Behavior
+      inject_as_bearer: true  # Overwrite Authorization header
+      auth_redirect_url: "/login"
+      skip_paths: ["/health", "/debug"]
+```
+
+### Available Configuration Options
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `require_auth` | `false` | Enable authentication for this route |
+| `inject_jwt` | `true` (if auth required) | Inject JWT token in headers |
+| `jwt_header_name` | `"X-Auth-Token"` | Name of JWT injection header |
+| `inject_user_claims` | `true` (if auth required) | Inject user claims as headers |
+| `claims_headers` | Auto-mapped | Custom claim-to-header mappings |
+| `inject_as_bearer` | `false` | Also inject as `Authorization: Bearer` |
+| `required_scopes` | `[]` | Scopes required from upstream IdP |
+| `skip_paths` | `[]` | Additional paths to exclude from auth |
+| `auth_redirect_url` | `"/authorize"` | Custom authentication redirect |
+
+### Authentication Flow 🌊
+
+#### 1. Bearer Token Flow (API Services)
+```
+Client → Gateway → Backend Service
+   ↓         ↓          ↓
+  Bearer   Validate   Process with
+   Token    JWT      injected claims
+```
+
+#### 2. Session Cookie Flow (Web Apps)
+```
+Browser → Gateway → Backend Service  
+   ↓          ↓          ↓
+Session   Validate   Process with
+ Cookie   Session   injected claims
+```
+
+#### 3. Unauthenticated Flow
+```
+Request → Gateway → Authentication Check → Redirect/Error
+   ↓                                              ↑
+Service                              /authorize or JSON error
+```
+
+### Backend Service Patterns 📋
+
+#### Pattern 1: Zero Authentication Code
+```go
+// Perfect for internal services
+func handleAPI(w http.ResponseWriter, r *http.Request) {
+    userID := r.Header.Get("X-User-ID")
+    // All authentication handled at gateway
+}
+```
+
+#### Pattern 2: Optional JWT Validation
+```go
+// Additional security layer
+func handleSecureAPI(w http.ResponseWriter, r *http.Request) {
+    jwtToken := r.Header.Get("X-Auth-Token")
+    if jwtToken != "" {
+        // Validate gateway JWT for extra security
+        claims, err := validateJWT(jwtToken)
+        if err != nil {
+            http.Error(w, "JWT invalid", http.StatusUnauthorized)
+            return
+        }
+    }
+}
+```
+
+#### Pattern 3: Scope-Based Authorization
+```go
+// Use injected scopes for fine-grained access
+func handleAdminAPI(w http.ResponseWriter, r *http.Request) {
+    scopes := r.Header.Get("X-User-Scopes")
+    if !strings.Contains(scopes, "admin.write") {
+        http.Error(w, "Forbidden", http.StatusForbidden)
+        return
+    }
+}
+```
+
+### Example Services 🛠️
+
+See the example services in `examples/proxy-backend/` that demonstrate:
+- Receiving injected authentication headers
+- Handling different authentication types
+- Processing user claims and scopes
+- Working with gateway-issued JWTs
+
+### Security Benefits 🔒
+
+1. **Centralized Authentication**: All auth logic in gateway
+2. **Short-lived Tokens**: 10-minute JWT lifetime
+3. **Scope Validation**: Enforced at gateway level
+4. **Audit Trail**. Centralized authentication logs
+5. **Token Rotation**: JWKs with key rotation support
+
+### Testing 🧪
+
+#### Test with curl
+```bash
+# Authenticate via browser first to get session cookie
+open http://localhost:8080/authorize
+
+# Test authenticated request
+curl -H "Host: api.example.local" http://localhost:8080/api/protected
+
+# Test with Bearer token
+curl -H "Authorization: Bearer <token>" \
+     -H "Host: api.example.local" \
+     http://localhost:8080/api/protected
+```
+
+#### Expected Response Headers
+```
+X-User-ID: entra:user123
+X-User-Email: john.doe@company.com
+X-Auth-Token: eyJhbGciOiJSUzI1NiJ9...
+X-Auth-Type: bearer
+X-User-Scopes: admin.read admin.write
+```
+
+### Migration Guide 📈
+
+#### From Manual Authentication
+1. Remove JWT validation code from backend services
+2. Replace `Authorization: Bearer` validation with header reading
+3. Configure gateway proxy routes
+4. Test with provided examples
+
+#### Legacy Service Support
+For services expecting `Authorization: Bearer` headers:
+```yaml
+proxy:
+  routes:
+    - host: "legacy.example.local"
+      target: "http://legacy-service:3000"
+      require_auth: true
+      inject_as_bearer: true  # Maintains existing behavior
+```
+
+This enhancement provides a seamless transition to gateway-first authentication while maintaining compatibility with existing services.

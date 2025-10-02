@@ -103,14 +103,23 @@ type ProxyConfig struct {
 
 // ProxyRoute maps a hostname to a backend target.
 type ProxyRoute struct {
-	Host              string   `yaml:"host"`
-	Target            string   `yaml:"target"`
-	RequireAuth       bool     `yaml:"require_auth"`
-	RequiredScopes    []string `yaml:"required_scopes"`
-	StripPrefix       string   `yaml:"strip_prefix"`
-	PreserveHost      bool     `yaml:"preserve_host"`
-	Timeout           string   `yaml:"timeout"`
-	InsecureSkipVerify bool    `yaml:"insecure_skip_verify"`
+	Host               string   `yaml:"host"`
+	Target             string   `yaml:"target"`
+	RequireAuth        bool     `yaml:"require_auth"`
+	RequiredScopes     []string `yaml:"required_scopes"`
+	StripPrefix        string   `yaml:"strip_prefix"`
+	PreserveHost       bool     `yaml:"preserve_host"`
+	Timeout            string   `yaml:"timeout"`
+	InsecureSkipVerify bool     `yaml:"insecure_skip_verify"`
+
+	// Enhanced authentication and JWT injection
+	InjectJWT        bool              `yaml:"inject_jwt"`
+	JWTHeaderName    string            `yaml:"jwt_header_name"`
+	InjectUserClaims bool              `yaml:"inject_user_claims"`
+	ClaimsHeaders    map[string]string `yaml:"claims_headers"`
+	SkipPaths        []string          `yaml:"skip_paths"`
+	AuthRedirectURL  string            `yaml:"auth_redirect_url"`
+	InjectAsBearer   bool              `yaml:"inject_as_bearer"`
 }
 
 // LoadConfig reads the YAML config file and merges environment overrides.

@@ -1,0 +1,140 @@
+# Enhanced Proxy Authentication Configuration Example
+# This demonstrates the advanced JWT injection and authentication features
+
+server:
+  public_url: http://localhost:8080
+  dev_listen_addr: 0.0.0.0:8080
+  dev_mode: true
+  cors:
+    client_origin_urls:
+      - http://localhost:3001
+
+clients:
+  # Gateway proxy client for authentication
+  - client_id: "gateway-proxy"
+    client_secret: ""
+    redirect_uris:
+      - http://localhost:8080/authorize/callback
+    scopes: ["openid", "profile", "email"]
+    audiences: ["proxy"]
+  
+  # Example web application client
+  - client_id: "webapp"
+    client_secret: ""
+    redirect_uris:
+      - http://localhost:3001/callback
+    scopes: ["openid", "profile", "email"]
+    audiences: ["ai-gateway"]
+
+providers:
+  default: "entra"
+  entra:
+    issuer: "https://login.microsoftonline.com/common/v2.0"
+    tenant_id: "YOUR_TENANT_ID"
+    client_id: "YOUR_ENTRA_APP_CLIENT_ID"
+    client_secret: "YOUR_ENTRA_APP_CLIENT_SECRET"
+
+proxy:
+  routes:
+    # Simple authenticated API - minimal configuration
+    - host: "api.example.local"
+      target: "http://localhost:3002"
+      require_auth: true
+      # Automatically: inject_jwt=true, inject_user_claims=true, jwt_header_name="X-Auth-Token"
+    
+    # Admin API with scope requirements and custom headers
+    - host: "admin.example.local"
+      target: "http://localhost:3003"
+      require_auth: true
+      required_scopes: ["admin.read", "admin.write"]
+      jwt_header_name: "X-Admin-JWT"
+      inject_user_claims: true
+      claims_headers:
+        email: "X-Admin-Email"
+        name: "X-Admin-Name"
+        idp: "X-Identity-Provider"
+    
+    # Legacy API that expects standard Authorization header
+    - host: "legacy-api.example.local"
+      target: "http://localhost:3004"
+      require_auth: true
+      inject_as_bearer: true  # Overwrites Authorization header with gateway JWT
+      skip_paths:
+        - "/health"
+        - "/metrics"
+        - "/debug"
+    
+    # Static SPA application with session-based authentication
+    - host: "app.example.local"
+      target: "http://localhost:3005"
+      require_auth: true
+      inject_jwt: false  # Don't inject JWT, just user info
+      inject_user_claims: true
+      auth_redirect_url: "/login"
+    
+    # Public API service - no authentication required
+    - host: "public.example.local"
+      target: "http://localhost:3006"
+      require_auth: false
+    
+    # Protected service with custom exclusions and redirect
+    - host: "service.example.local"
+      target: "http://localhost:3007"
+      require_auth: true
+      skip_paths:
+        - "/health"
+        - "/status"
+        - "/api/public"
+      auth_redirect_url: "/auth"
+      claims_headers:
+        subject: "X-User-Subject"
+        email: "X-User-Email"
+        name: "X-User-Display-Name"
+        exp: "X-Token-Expires"
+        issuer: "X-Token-Issuer"
+
+# Example backend service implementation:
+
+# Minimal Implementation (GET /api/protected)
+# func handleProtectedAPI(w http.ResponseWriter, r *http.Request) {
+#     // Gateway has already authenticated user
+#     userID := r.Header.Get("X-User-ID")
+#     userEmail := r.Header.Get("X-User-Email")
+#     
+#     response := map[string]interface{}{
+#         "message": "Protected data",
+#         "user_id": userID,
+#         "user_email": userEmail,
+#         "authenticated_by": "gateway",
+#     }
+#     
+#     json.NewEncoder(w).Encode(response)
+# }
+
+# Advanced Implementation with JWT validation
+# func handleSecureAPI(w http.ResponseWriter, r *http.Request) {
+#     // Optional: Validate the gateway-issued JWT for additional security
+#     jwtToken := r.Header.Get("X-Auth-Token")
+#     if jwtToken != "" {
+#         claims, err := validateGatewayJWT(jwtToken)
+#         if err != nil {
+#             http.Error(w, "JWT validation failed", http.StatusUnauthorized)
+#             return
+#         }
+#         // Use validated claims for fine-grained authorization
+#     }
+# }
+
+# Authentication Flow:
+# 1. User visits protected service → Gateway checks authentication
+# 2. If not authenticated → Redirect to appropriate login URL
+# 3. If authenticated → Inject JWT and user claims → Forward to service
+# 4. Service receives authenticated request with user context
+
+# Intelligent Defaults:
+# - Bearer token auth for /api/* paths
+# - Cookie auth for browser requests  
+# - Auto-skip /health, /metrics paths
+# - JSON errors for API calls, redirects for browsers
+# - JWT lifetime: 10 minutes
+
