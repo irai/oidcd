@@ -27,6 +27,9 @@ type ProxyManager struct {
 	store          *InMemoryStore
 	logger         *slog.Logger
 	gatewayIssuer  string
+	cookieDomain   string
+	secure         bool
+	sameSite       http.SameSite
 }
 
 type proxyRoute struct {
@@ -64,14 +67,23 @@ type AuthRedirect struct {
 }
 
 // NewProxyManager creates a proxy manager from configuration.
-func NewProxyManager(cfg ProxyConfig, validator *TokenService, sessionManager *SessionManager, store *InMemoryStore, gatewayIssuer string, logger *slog.Logger) (*ProxyManager, error) {
+func NewProxyManager(cfg ProxyConfig, validator *TokenService, sessionManager *SessionManager, store *InMemoryStore, serverCfg ServerConfig, logger *slog.Logger) (*ProxyManager, error) {
+	sameSite := http.SameSiteStrictMode
+	if serverCfg.DevMode {
+		sameSite = http.SameSiteLaxMode
+	}
+	secure := !serverCfg.DevMode
+
 	pm := &ProxyManager{
 		routes:         make(map[string]*proxyRoute),
 		validator:      validator,
 		sessionManager: sessionManager,
 		store:          store,
 		logger:         logger,
-		gatewayIssuer:  strings.TrimSuffix(gatewayIssuer, "/"),
+		gatewayIssuer:  strings.TrimSuffix(serverCfg.PublicURL, "/"),
+		cookieDomain:   serverCfg.CookieDomain,
+		secure:         secure,
+		sameSite:       sameSite,
 	}
 
 	for _, routeCfg := range cfg.Routes {
@@ -461,21 +473,24 @@ func (pm *ProxyManager) injectUserClaimsAsHeaders(r *http.Request, auth *AuthRes
 
 	// Try to get user profile information from session or claims
 	if auth.Session != nil {
-		// In a real implementation, we'd fetch user profile from storage
-		// For now, we'll extract basic info from session
-		if email := pm.extractEmailFromSession(auth.Session); email != "" {
-			r.Header.Set(defaultMappings["email"], email)
+		// Fetch user profile from storage
+		profile := pm.store.LookupUserProfile(auth.Session.UserID)
+		if profile != nil {
+			if profile.Email != "" {
+				r.Header.Set(defaultMappings["email"], profile.Email)
+			}
+			if profile.Name != "" {
+				r.Header.Set(defaultMappings["name"], profile.Name)
+			}
 		}
 	}
 }
 
-// extractEmailFromSession extracts email from session (placeholder implementation)
+// extractEmailFromSession extracts email from session by looking up user profile
 func (pm *ProxyManager) extractEmailFromSession(session *Session) string {
-	// This would typically fetch from user profile storage
-	// For now, return a placeholder
-	parts := strings.Split(session.UserID, ":")
-	if len(parts) >= 2 {
-		return fmt.Sprintf("user@%s.local", parts[1][:min(len(parts[1]), 8)])
+	profile := pm.store.LookupUserProfile(session.UserID)
+	if profile != nil {
+		return profile.Email
 	}
 	return ""
 }
@@ -551,17 +566,17 @@ func (pm *ProxyManager) handleAuthError(w http.ResponseWriter, r *http.Request, 
 	// TODO: Store verifier in session for token exchange
 	// For now, we'll need to implement session storage for PKCE verifiers
 
-	// Build the full redirect URI (scheme + host + path)
+	// Build the redirect URI as a fixed callback endpoint
 	scheme := "http"
 	if r.TLS != nil {
 		scheme = "https"
 	}
-	fullRedirectURI := fmt.Sprintf("%s://%s%s", scheme, r.Host, r.URL.String())
+	callbackURI := fmt.Sprintf("%s://%s/callback/proxy", scheme, r.Host)
 
 	// Build auth URL with current request context and PKCE
 	authURL := fmt.Sprintf("%s?client_id=gateway-proxy&redirect_uri=%s&response_type=code&scope=openid profile email&state=%s&code_challenge=%s&code_challenge_method=S256",
 		redirectURL,
-		url.QueryEscape(fullRedirectURI),
+		url.QueryEscape(callbackURI),
 		state,
 		challenge)
 
@@ -615,14 +630,15 @@ func (pm *ProxyManager) handleOAuthCallback(w http.ResponseWriter, r *http.Reque
 	// Save the new session
 	pm.store.SaveSession(newSession)
 
-	// Set session cookie (using same name as SessionManager)
+	// Set session cookie (using same name and domain as SessionManager)
 	http.SetCookie(w, &http.Cookie{
 		Name:     "gw_session",
 		Value:    newSession.ID,
 		Path:     "/",
+		Domain:   pm.cookieDomain,
 		HttpOnly: true,
-		Secure:   r.TLS != nil,
-		SameSite: http.SameSiteLaxMode,
+		Secure:   pm.secure,
+		SameSite: pm.sameSite,
 		MaxAge:   int((12 * time.Hour).Seconds()),
 	})
 

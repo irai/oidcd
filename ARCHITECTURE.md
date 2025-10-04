@@ -53,6 +53,8 @@
 
 ## 4. OIDC/OAuth2 Endpoints (Gateway)
 
+### Standard OIDC Endpoints
+
 * `GET /.well-known/openid-configuration` — discovery document.
 * `GET /.well-known/jwks.json` (alias `/jwks.json`) — public keys for JWT validation.
 * `GET /authorize` — Auth Code + PKCE; supports `scope`, `state`, `nonce`, optional `aud`/`resource`, `idp=auth0|entra`.
@@ -62,6 +64,23 @@
 * `POST /introspect` — RFC 7662.
 * `POST /revoke` — RFC 7009.
 * Optional `POST /logout` — clear session cookie and revoke session.
+
+### Reverse Proxy Endpoints
+
+When proxy routes are configured, the gateway also handles:
+
+* **Host-based routing** — All requests are routed based on the HTTP `Host` header.
+* **Automatic authentication redirect** — If `require_auth: true` and no valid session exists, gateway redirects to `/authorize` with state preserving original URL.
+* **OAuth callback handling** — `GET /callback/{idp}` also handles proxy authentication callbacks, creating sessions and redirecting back to original URL.
+* **Session-based authentication** — All proxy routes share the same session cookie (configured via `cookie_domain`).
+
+**Example Flow:**
+1. User accesses `https://demo-app.example.com/dashboard`
+2. Gateway matches route by host, checks for session
+3. No session → redirect to `GET /authorize?client_id=gateway-proxy&redirect_uri=...&state=<encoded_original_url>`
+4. After authentication → redirect to `GET /callback/entra?code=...&state=...`
+5. Gateway creates session, sets cookie, redirects back to `https://demo-app.example.com/dashboard`
+6. Subsequent requests include session cookie → proxied directly to backend
 
 ---
 
@@ -144,21 +163,60 @@ The ID token is intended for the client application to learn about the authentic
 
 ---
 
-## 8. Microservice Design: Validating/Rejecting API Calls
+## 8. Three Integration Patterns
 
-**Core Principles**
+The gateway supports three distinct patterns for protecting applications and services:
 
-* Accept only **gateway‑issued** JWTs.
-* Validate **signature**, `iss`, **acceptable `aud`**, `exp/nbf/iat` (with clock skew), and **required scopes**.
-* Apply **resource‑level authorization**: tenant ownership, roles, ABAC/RBAC checks.
+### 8.1. BFF (Backend-For-Frontend) Pattern
 
-**SDK Usage (Go)**
+**Use Case:** Traditional web applications with server-side rendering or Next.js/React apps with a backend.
 
-* Import the `/client` package shipped by the gateway repo.
-* Initialize a `Validator` with gateway `issuer`, `jwks_url`, and `expected audiences`.
-* Use HTTP middleware to enforce auth and scopes.
+**How it Works:**
+1. Browser requests protected page → BFF detects no session
+2. BFF redirects to gateway `/authorize` with PKCE
+3. Gateway reuses session if valid; otherwise redirects to IdP login
+4. After authentication, gateway redirects back to BFF with authorization code
+5. BFF exchanges code for tokens (ID token, access token, refresh token)
+6. BFF creates its own session cookie and stores tokens server-side
+7. BFF calls microservices using the access token as Bearer token
 
-**Example (chi) — Protect routes and check scope**
+**BFF Security:**
+- Require PKCE (S256) for public clients
+- Validate `state` and `nonce`; short-lived authorization codes
+- Strict redirect URI allow-list
+- CSRF protection for state-changing endpoints (double submit or SameSite=Strict)
+- Tokens never exposed to browser; httpOnly session cookies only
+
+**When to Use:**
+- Building traditional web applications
+- Need server-side session management
+- Want to keep tokens completely off the browser
+- Building new applications from scratch
+
+---
+
+### 8.2. Microservice Pattern (Direct JWT Validation)
+
+**Use Case:** Internal APIs and microservices that need fine-grained control over authentication.
+
+**How it Works:**
+1. Client (BFF or another service) obtains JWT from gateway
+2. Client includes JWT in `Authorization: Bearer <token>` header
+3. Microservice validates JWT signature using gateway's JWKS
+4. Microservice checks `iss`, `aud`, `exp`, and required scopes
+5. Microservice applies resource-level authorization (tenant ownership, roles, etc.)
+
+**Core Principles:**
+- Accept only **gateway-issued** JWTs
+- Validate **signature**, `iss`, **acceptable `aud`**, `exp/nbf/iat` (with clock skew), and **required scopes**
+- Apply **resource-level authorization**: tenant ownership, roles, ABAC/RBAC checks
+
+**SDK Usage (Go):**
+- Import the `/client` package shipped by the gateway repo
+- Initialize a `Validator` with gateway `issuer`, `jwks_url`, and `expected audiences`
+- Use HTTP middleware to enforce auth and scopes
+
+**Example (chi) — Protect routes and check scope:**
 
 ```go
 v := client.NewValidator(client.ValidatorConfig{
@@ -176,15 +234,135 @@ r.Get("/orders/{id}", func(w http.ResponseWriter, r *http.Request) {
 })
 ```
 
-**Common Rejection Reasons**
+**Common Rejection Reasons:**
+- `401` — Missing/invalid Bearer token; signature mismatch; wrong `iss`
+- `403` — Valid token but insufficient `scope`; `aud` not allowed; tenant mismatch
 
-* `401` — Missing/invalid Bearer token; signature mismatch; wrong `iss`.
-* `403` — Valid token but insufficient `scope`; `aud` not allowed; tenant mismatch.
+**Performance:**
+- JWKS cached in memory with ETag/Cache-Control; refresh on `kid` miss
+- Prefer short AT TTLs + refresh rotation in BFF
 
-**Performance**
+**When to Use:**
+- Building internal microservices
+- Need fine-grained scope and audience validation
+- Want service-to-service authentication
+- Services built in different languages/frameworks
 
-* JWKS cached in memory with ETag/Cache‑Control; refresh on `kid` miss.
-* Prefer short AT TTLs + refresh rotation in BFF.
+---
+
+### 8.3. Reverse Proxy Pattern (Zero-Auth Edge Protection)
+
+**Use Case:** Protect existing applications or services without modifying their code. Ideal for legacy systems, third-party apps, or rapid prototyping.
+
+**How it Works:**
+1. User accesses protected domain (e.g., `demo-app.example.com`)
+2. Gateway checks for valid session cookie
+3. If no session, gateway redirects to IdP for authentication
+4. After authentication, gateway creates session and sets cookie
+5. Gateway proxies request to backend, optionally injecting JWT and user claims as headers
+6. Backend receives authenticated request with user context (no auth code needed)
+
+**Configuration Example:**
+
+```yaml
+proxy:
+  routes:
+    # Public route - no authentication required
+    - host: demo-public.example.com
+      target: http://backend1:3000
+      require_auth: false
+      preserve_host: false
+
+    # Protected route - authentication required
+    - host: demo-app.example.com
+      target: http://backend2:3000
+      require_auth: true
+      preserve_host: false
+
+    # Advanced - inject JWT and user claims as headers
+    - host: demo-api.example.com
+      target: http://backend3:3000
+      require_auth: true
+      inject_jwt: true
+      jwt_header_name: X-Auth-Token
+      inject_user_claims: true
+      claims_headers:
+        email: X-User-Email
+        name: X-User-Name
+        sub: X-User-ID
+```
+
+**Proxy Route Options:**
+- `host`: Hostname to match (from HTTP Host header)
+- `target`: Backend service URL
+- `require_auth`: If true, enforce authentication before proxying
+- `required_scopes`: Optional list of scopes required for access
+- `strip_prefix`: Remove URL prefix before proxying
+- `preserve_host`: Keep original Host header when proxying
+- `timeout`: Custom timeout for this route
+- `inject_jwt`: Automatically inject JWT as header
+- `jwt_header_name`: Header name for JWT (default: `Authorization`)
+- `inject_as_bearer`: If true, format as `Bearer <token>`
+- `inject_user_claims`: Extract claims from JWT and inject as headers
+- `claims_headers`: Map of claim name to header name
+- `skip_paths`: Paths that bypass authentication (e.g., health checks)
+- `auth_redirect_url`: Custom redirect URL after authentication
+
+**Authentication Flow:**
+1. Request to protected route without session → redirect to gateway `/authorize`
+2. Gateway authenticates user via IdP
+3. Gateway creates session with cookie (shared across all proxy routes via `cookie_domain`)
+4. Gateway redirects back to original URL
+5. Subsequent requests include session cookie → proxied directly to backend
+
+**Security Features:**
+- Session cookies with configurable domain (supports subdomain sharing)
+- Automatic session validation before each proxied request
+- Optional JWT injection with standard Bearer format
+- User claim injection as custom headers
+- Scope-based access control per route
+- Path-based authentication bypass for health checks
+
+**When to Use:**
+- Protecting legacy applications without code changes
+- Rapid prototyping and demos
+- Migrating existing services to authenticated architecture
+- Third-party applications that can't integrate OIDC
+- Microservices that can handle user context from headers
+- Centralized authentication policy enforcement
+
+**Backend Integration:**
+The backend service receives requests with optional injected headers:
+- `Authorization: Bearer <jwt>` (if `inject_jwt: true` and `inject_as_bearer: true`)
+- `X-User-Email: user@example.com` (if `inject_user_claims: true`)
+- `X-User-Name: John Doe` (if `inject_user_claims: true`)
+- `X-User-ID: auth0|123456` (if `inject_user_claims: true`)
+
+Backend can:
+1. **Trust the headers** (gateway is the only entry point)
+2. **Validate the JWT** using the gateway's JWKS (defense in depth)
+3. **Use user context** for business logic, logging, or authorization
+
+---
+
+### Pattern Comparison
+
+| Feature | BFF | Microservice | Reverse Proxy |
+|---------|-----|-------------|---------------|
+| **Authentication Code** | In BFF layer | In each service | None (gateway handles) |
+| **Token Type** | Session cookies | Bearer JWT | Both supported |
+| **Backend Changes** | Medium | Medium-High | None to minimal |
+| **Best For** | Web applications | Internal APIs | Legacy/third-party apps |
+| **Security Model** | Session-based | Token validation | Centralized at edge |
+| **Flexibility** | Low | High | Medium |
+| **Setup Complexity** | Medium | Medium | Low (config only) |
+| **Migration Effort** | New BFF build | Code changes | Config only |
+| **Production Ready** | ✅ Yes | ✅ Yes | ✅ Yes |
+
+**Decision Guide:**
+- 👉 Use **BFF** if you're building a traditional web application with server-side session management
+- 👉 Use **Microservice** if you need fine-grained control, service-to-service auth, or multi-language support
+- 👉 Use **Reverse Proxy** if you want centralized auth with zero backend code changes
 
 ---
 
@@ -215,12 +393,124 @@ r.Get("/orders/{id}", func(w http.ResponseWriter, r *http.Request) {
 
 ## 10. Configuration (Summary)
 
-* **Server**: issuer, dev/prod mode, HTTP/HTTPS addresses, domain names, TLS mode (autocert/certmagic/manual), HSTS, CORS, proxy trust.
+* **Server**: public URL (issuer), dev/prod mode, HTTP/HTTPS listen addresses, cookie domain (for subdomain sharing), TLS config, CORS, proxy trust.
+* **TLS**: mode (autocert/certmagic/manual), domains list, cache directory, ACME email, HSTS max age, minimum TLS version.
 * **Keys**: algorithm (RS256), rotation interval, persistent key path in prod.
-* **Providers**: Auth0 & Entra: issuer URL, client id/secret.
+* **Providers**: Auth0 & Entra: issuer URL, client id/secret, tenant ID (for Entra).
 * **Clients**: public/confidential, redirect URIs, allowed scopes/audiences.
-* **Tokens**: access TTL (5–10m), refresh TTL (e.g., 30d), rotation on.
+* **Tokens**: access TTL (5–10m), refresh TTL (e.g., 30d), rotation on, default audience.
 * **Sessions**: TTL (e.g., 12h), sliding window optional.
+* **Proxy**: routes with host-based routing, authentication requirements, JWT/claims injection, scope enforcement.
+
+### Configuration Example
+
+```yaml
+server:
+  public_url: http://localhost:8080
+  dev_listen_addr: 0.0.0.0:8080
+  http_listen_addr: :80
+  https_listen_addr: :443
+  dev_mode: true
+  cookie_domain: ""  # Empty for localhost, or .example.com for subdomain sharing
+  tls:
+    mode: autocert
+    domains:
+      - localhost
+      - auth.example.com
+      - app1.example.com
+      - app2.example.com
+    cache_dir: ./.certs
+    email: admin@example.com
+    hsts_max_age: 15552000
+    min_version: "1.2"
+  trust_proxy_headers: false
+  cors:
+    client_origin_urls:
+      - http://localhost:3001
+    allowed_headers:
+      - Authorization
+      - Content-Type
+    allowed_methods:
+      - GET
+      - POST
+      - OPTIONS
+
+keys:
+  jwks_path: ""
+  rotate_interval: 168h0m0s
+  alg: RS256
+
+clients:
+  - client_id: webapp
+    client_secret: ""
+    redirect_uris:
+      - http://localhost:3001/callback
+    scopes:
+      - openid
+      - profile
+      - email
+    audiences:
+      - ai-gateway
+
+  - client_id: gateway-proxy
+    client_secret: ""
+    redirect_uris:
+      - http://localhost:8080/callback/entra
+    scopes:
+      - openid
+      - profile
+      - email
+    audiences:
+      - proxy
+
+providers:
+  default: entra
+  entra:
+    issuer: https://login.microsoftonline.com/common/v2.0
+    client_id: "your-client-id"
+    client_secret: "your-client-secret"
+    tenant_id: "your-tenant-id"
+
+tokens:
+  access_ttl: 10m0s
+  refresh_ttl: 720h0m0s
+  rotate_refresh: true
+  audience_default: ai-gateway
+
+sessions:
+  ttl: 12h0m0s
+
+proxy:
+  routes:
+    - host: demo-public.example.com
+      target: http://backend1:3000
+      require_auth: false
+
+    - host: demo-app.example.com
+      target: http://backend2:3000
+      require_auth: true
+      inject_jwt: true
+      inject_as_bearer: true
+```
+
+### Environment Variable Overrides
+
+Key configuration values can be overridden via environment variables:
+
+* `OIDCD_SERVER_PUBLIC_URL` — Override server.public_url
+* `OIDCD_SERVER_DEV_LISTEN_ADDR` — Override server.dev_listen_addr
+* `OIDCD_SERVER_HTTP_LISTEN_ADDR` — Override server.http_listen_addr
+* `OIDCD_SERVER_HTTPS_LISTEN_ADDR` — Override server.https_listen_addr
+* `OIDCD_SERVER_DEV_MODE` — Override server.dev_mode (true/false)
+* `OIDCD_SERVER_TLS_DOMAINS` — Override server.tls.domains (comma-separated)
+* `OIDCD_SERVER_TLS_CACHE_DIR` — Override server.tls.cache_dir
+* `OIDCD_SERVER_TLS_EMAIL` — Override server.tls.email
+* `OIDCD_SERVER_TLS_MODE` — Override server.tls.mode
+* `OIDCD_SERVER_CORS_CLIENT_ORIGIN_URLS` — Override server.cors.client_origin_urls (comma-separated)
+* `OIDCD_KEYS_JWKS_PATH` — Override keys.jwks_path
+* `OIDCD_TOKENS_ACCESS_TTL` — Override tokens.access_ttl
+* `OIDCD_TOKENS_REFRESH_TTL` — Override tokens.refresh_ttl
+* `OIDCD_TOKENS_ROTATE_REFRESH` — Override tokens.rotate_refresh (true/false)
 
 ---
 

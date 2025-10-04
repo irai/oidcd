@@ -24,7 +24,7 @@ services:
   client:
     build:
       context: .
-      dockerfile: cmd/client/Dockerfile
+      dockerfile: examples/client/Dockerfile
     container_name: oidc-client
     ports:
       - "3001:3000"
@@ -42,14 +42,14 @@ services:
       oidcd:
         condition: service_healthy
 
-  # Public backend service (no auth required)
-  backend1:
+  # BFF service (validates JWT tokens itself)
+  bff:
     build:
       context: .
-      dockerfile: cmd/backend/Dockerfile
-    container_name: backend1
+      dockerfile: examples/bff/Dockerfile
+    container_name: bff-service
     environment:
-      - SERVICE_NAME=Public API Service
+      - SERVICE_NAME=BFF Service
       - LISTEN_ADDR=0.0.0.0:3000
       - OIDC_ISSUER=http://oidcd:8080
       - JWKS_URL=http://oidcd:8080/.well-known/jwks.json
@@ -60,18 +60,12 @@ services:
       oidcd:
         condition: service_healthy
 
-  # Protected backend service (requires JWT token)
-  backend2:
+  # Proxy backend demo service (only accessible via gateway)
+  proxy-backend:
     build:
       context: .
-      dockerfile: cmd/backend/Dockerfile
-    container_name: backend2
-    environment:
-      - SERVICE_NAME=Protected Microservice
-      - LISTEN_ADDR=0.0.0.0:3000
-      - OIDC_ISSUER=http://oidcd:8080
-      - JWKS_URL=http://oidcd:8080/.well-known/jwks.json
-      - AUDIENCE=ai-gateway
+      dockerfile: examples/proxy-backend/Dockerfile
+    container_name: proxy-backend
     networks:
       - oidc-net
     depends_on:

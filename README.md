@@ -11,28 +11,160 @@ A lightweight OIDC/OAuth2 authorization server that fronts upstream IdPs (Auth0 
 
 ## Three Integration Patterns
 
-This gateway supports three common integration patterns:
+This gateway supports three distinct authentication patterns, each optimized for different use cases:
 
-### 1. **BFF (Backend-For-Frontend)** - Web Applications
-For web apps that need user login. The BFF handles OAuth flow server-side and maintains HTTP-only session cookies.
+### 1. **BFF (Backend-For-Frontend)** - Web Applications 🌐
+The traditional pattern for web applications requiring user authentication. The BFF (Backend-For-Frontend) handles the complete OAuth flow server-side and maintains secure HTTP-only session cookies.
+
+**How it works:**
+- User visits web app → Redirected to gateway `/authorize`
+- Gateway orchestrates OAuth flow with upstream IdP (Entra/Auth0)
+- After authentication, gateway creates session with HTTP-only cookie
+- BFF validates session on each request using the gateway's SDK
 
 **Example:** `cmd/client/` - Web application with Microsoft 365 login
 
-**Use when:** Building web applications with user authentication
+**Use when:**
+- Building traditional web applications (server-rendered or SPAs)
+- Need secure session management with HTTP-only cookies
+- Want to keep OAuth tokens server-side only
 
-### 2. **Microservice** - JWT Token Validation
-For backend APIs that validate JWT tokens on each request using the client SDK.
+**Configuration:**
+```yaml
+clients:
+  - client_id: "webapp"
+    redirect_uris: ["http://localhost:3001/callback"]
+    scopes: ["openid", "profile", "email"]
+```
+
+---
+
+### 2. **Microservice** - Direct JWT Validation 🔐
+For backend microservices that receive and validate JWT tokens directly using the client SDK. This pattern provides the highest security and control.
+
+**How it works:**
+- Client obtains JWT from gateway OAuth flow
+- Client includes JWT in `Authorization: Bearer` header
+- Microservice validates JWT using gateway's JWKS endpoint
+- Microservice extracts claims for authorization decisions
 
 **Example:** `cmd/backend/` - API service that validates and displays JWT claims
 
-**Use when:** Building internal APIs that need to verify authenticated requests
+**Use when:**
+- Building internal microservices/APIs
+- Need fine-grained authorization based on scopes
+- Want direct control over token validation
+- Service-to-service authentication required
 
-### 3. **Reverse Proxy** - Gateway-Protected Services *(Enhanced)*
-For services accessed through the gateway's reverse proxy with automatic authentication and JWT injection.
+**Backend Implementation:**
+```go
+import "oidcd/client"
 
-**Configuration:** Host-based routing with intelligent authentication detection, JWT token injection, and user claims mapping
+validator := client.NewValidator(client.ValidatorConfig{
+    Issuer:            "http://localhost:8080",
+    JWKSURL:           "http://localhost:8080/.well-known/jwks.json",
+    ExpectedAudiences: []string{"ai-gateway"},
+})
 
-**Use when:** Services should be protected at the edge without implementing auth themselves
+// Validate and extract claims
+claims, err := validator.ValidateToken(r.Context(), tokenString)
+```
+
+---
+
+### 3. **Reverse Proxy** - Zero-Auth Edge Protection 🛡️
+The modern edge authentication pattern where services are protected at the gateway level without implementing any authentication code themselves. The gateway handles all authentication and injects user context.
+
+**How it works:**
+- User/client makes request to proxied service via gateway
+- Gateway detects authentication (Bearer token or session cookie)
+- Gateway validates auth against upstream IdP
+- Gateway injects JWT and user claims as HTTP headers
+- Backend service receives pre-authenticated request with user context
+
+**Configuration:**
+```yaml
+server:
+  public_url: http://localhost:8080
+  cookie_domain: ""  # Or set to domain for subdomain sharing
+  tls:
+    domains: [localhost]
+
+proxy:
+  routes:
+    # Public service - no authentication
+    - host: "public-api.example.com"
+      target: "http://backend1:3000"
+      require_auth: false
+
+    # Protected service with automatic JWT injection
+    - host: "protected-api.example.com"
+      target: "http://backend2:3000"
+      require_auth: true
+      # Defaults: inject_jwt=true, inject_user_claims=true
+
+    # Advanced: Scope requirements + custom headers
+    - host: "admin-api.example.com"
+      target: "http://admin-backend:3000"
+      require_auth: true
+      required_scopes: ["admin.read", "admin.write"]
+      jwt_header_name: "X-Admin-Token"
+      claims_headers:
+        email: "X-Admin-Email"
+        name: "X-Admin-Name"
+```
+
+**Backend Implementation (Zero Auth Code):**
+```go
+func handleAPI(w http.ResponseWriter, r *http.Request) {
+    // Gateway already validated authentication!
+    userID := r.Header.Get("X-User-ID")
+    userEmail := r.Header.Get("X-User-Email")
+    jwtToken := r.Header.Get("X-Auth-Token")  // Optional: validate for extra security
+
+    // Business logic only
+    response := map[string]string{
+        "user": userEmail,
+        "data": "protected content",
+    }
+    json.NewEncoder(w).Encode(response)
+}
+```
+
+**Use when:**
+- Migrating legacy services to centralized auth
+- Building new services that shouldn't handle auth
+- Need consistent auth across multiple services
+- Want to enforce authentication at the edge/perimeter
+- Deploying to Kubernetes/containerized environments
+
+**Key Benefits:**
+- ✅ **Zero authentication code** in backend services
+- ✅ **Centralized authentication** policy enforcement
+- ✅ **Automatic JWT injection** with user context
+- ✅ **Intelligent routing** based on host headers
+- ✅ **Smart error handling** (JSON for APIs, redirects for browsers)
+- ✅ **Cookie domain sharing** for subdomain-based routing
+
+---
+
+### Pattern Comparison
+
+| Feature | BFF (Web Apps) | Microservice (JWT) | Reverse Proxy (Zero-Auth) |
+|---------|---------------|-------------------|---------------------------|
+| **Authentication Code** | In BFF layer | In each service | None (gateway handles) |
+| **Token Type** | Session cookies | Bearer JWT | Both supported |
+| **Best For** | Web applications | Internal APIs | Edge protection |
+| **Security Model** | Session-based | Token validation | Centralized at edge |
+| **Backend Complexity** | Medium | Medium-High | Minimal |
+| **Flexibility** | Low | High | Medium |
+| **Migration Effort** | New builds | Code changes | Config only |
+| **Production Ready** | ✅ Yes | ✅ Yes | ✅ Yes |
+
+**Decision Guide:**
+- 👉 Use **BFF** if you're building a traditional web application
+- 👉 Use **Microservice** if you need fine-grained control and service-to-service auth
+- 👉 Use **Reverse Proxy** if you want centralized auth with minimal backend changes
 
 > **📘 See [AI_INTEGRATION_GUIDE.md](AI_INTEGRATION_GUIDE.md) for detailed integration instructions**
 
@@ -322,38 +454,97 @@ Automatically skips authentication for:
 
 ### Configuration Options ⚙️
 
-#### Basic Configuration
+#### Local Development Setup (Entra-compatible)
+For local development with Microsoft Entra ID (which requires HTTPS for non-localhost redirects):
+
 ```yaml
+server:
+  public_url: http://localhost:8080
+  dev_listen_addr: 0.0.0.0:8080
+  dev_mode: true
+  cookie_domain: ""  # Empty = use request host
+  tls:
+    domains:
+      - localhost
+      - demo-api.dev.nexxia.com.au  # Additional proxied hosts
+
+providers:
+  default: entra
+  entra:
+    issuer: "https://login.microsoftonline.com/{tenant-id}/v2.0"
+    client_id: "YOUR_CLIENT_ID"
+    client_secret: "YOUR_SECRET"
+
+clients:
+  - client_id: "gateway-proxy"
+    redirect_uris:
+      - http://localhost:8080/callback/entra
+    scopes: ["openid", "profile", "email"]
+
 proxy:
   routes:
-    - host: "api.example.local"
+    - host: "demo-api.dev.nexxia.com.au"
       target: "http://backend:3000"
       require_auth: true
-      # Automatic: inject_jwt=true, inject_user_claims=true
 ```
 
-#### Advanced Configuration
+**Entra Setup:**
+- Redirect URI: `http://localhost:8080/callback/entra` (Entra allows HTTP for localhost)
+- Access via: `http://demo-api.dev.nexxia.com.au:8080` (add to /etc/hosts → 127.0.0.1)
+
+#### Production Setup (Subdomain Cookie Sharing)
+For production with subdomain-based services:
+
 ```yaml
+server:
+  public_url: https://gw.yourdomain.com
+  cookie_domain: .yourdomain.com  # Share cookies across subdomains
+  tls:
+    mode: autocert
+    domains:
+      - gw.yourdomain.com
+      - api.yourdomain.com
+      - admin.yourdomain.com
+
 proxy:
   routes:
-    - host: "admin.example.local"
+    - host: "api.yourdomain.com"
+      target: "http://api-backend:3000"
+      require_auth: true
+
+    - host: "admin.yourdomain.com"
       target: "http://admin-backend:3000"
       require_auth: true
       required_scopes: ["admin.read", "admin.write"]
-      
+```
+
+**Benefits of Cookie Domain:**
+- Single authentication across all `*.yourdomain.com` subdomains
+- Session persists when navigating between services
+- Simplified user experience with SSO-like behavior
+
+#### Advanced Route Configuration
+```yaml
+proxy:
+  routes:
+    - host: "admin.example.com"
+      target: "http://admin-backend:3000"
+      require_auth: true
+      required_scopes: ["admin.read", "admin.write"]
+
       # JWT Injection
       inject_jwt: true
       jwt_header_name: "X-Admin-JWT"
-      
-      # User Claims Injection  
+
+      # User Claims Injection
       inject_user_claims: true
       claims_headers:
         email: "X-Admin-Email"
         name: "X-Admin-Name"
         idp: "X-Identity-Provider"
-      
+
       # Special Behavior
-      inject_as_bearer: true  # Overwrite Authorization header
+      inject_as_bearer: true  # Also set Authorization: Bearer header
       auth_redirect_url: "/login"
       skip_paths: ["/health", "/debug"]
 ```

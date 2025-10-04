@@ -113,7 +113,7 @@ func main() {
 		m := &autocert.Manager{
 			Cache:      autocert.DirCache(cfg.Server.TLS.CacheDir),
 			Prompt:     autocert.AcceptTOS,
-			HostPolicy: autocert.HostWhitelist(cfg.Server.DomainNames...),
+			HostPolicy: autocert.HostWhitelist(cfg.Server.TLS.Domains...),
 			Email:      cfg.Server.TLS.Email,
 		}
 		tlsCfg := &tls.Config{
@@ -281,7 +281,7 @@ func runSetup(path string, logger *slog.Logger) (server.Config, error) {
 		cfg.Server.CORS.ClientOriginURLs = normalizeList(corsOrigins, cfg.Server.CORS.ClientOriginURLs)
 	} else {
 		domain := askRequired(reader, "Primary public domain (e.g. auth.example.com)")
-		cfg.Server.DomainNames = []string{domain}
+		cfg.Server.TLS.Domains = []string{domain}
 		cfg.Server.PublicURL = "https://" + strings.TrimSuffix(domain, "/")
 		acmeEmail := ask(reader, "ACME contact email", cfg.Server.TLS.Email)
 		cfg.Server.TLS.Email = acmeEmail

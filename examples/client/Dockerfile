@@ -4,7 +4,7 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -o /out/oidc-client ./cmd/client
+RUN CGO_ENABLED=0 GOOS=linux go build -o /out/oidc-client ./examples/client
 
 FROM alpine:3.19
 RUN addgroup -S client && adduser -S client -G client

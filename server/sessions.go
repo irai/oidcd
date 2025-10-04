@@ -11,11 +11,12 @@ const sessionCookieName = "gw_session"
 
 // SessionManager handles cookie-backed sessions.
 type SessionManager struct {
-	store    *InMemoryStore
-	logger   *slog.Logger
-	ttl      time.Duration
-	secure   bool
-	sameSite http.SameSite
+	store        *InMemoryStore
+	logger       *slog.Logger
+	ttl          time.Duration
+	secure       bool
+	sameSite     http.SameSite
+	cookieDomain string
 }
 
 // NewSessionManager constructs a session manager honouring config.
@@ -27,11 +28,12 @@ func NewSessionManager(cfg Config, store *InMemoryStore, logger *slog.Logger) *S
 	secure := !cfg.Server.DevMode
 
 	return &SessionManager{
-		store:    store,
-		logger:   logger,
-		ttl:      cfg.Sessions.TTL,
-		secure:   secure,
-		sameSite: sameSite,
+		store:        store,
+		logger:       logger,
+		ttl:          cfg.Sessions.TTL,
+		secure:       secure,
+		sameSite:     sameSite,
+		cookieDomain: cfg.Server.CookieDomain,
 	}
 }
 
@@ -73,6 +75,7 @@ func (sm *SessionManager) Create(w http.ResponseWriter, r *http.Request, provide
 		Name:     sessionCookieName,
 		Value:    id,
 		Path:     "/",
+		Domain:   sm.cookieDomain,
 		HttpOnly: true,
 		Secure:   sm.secure,
 		SameSite: sm.sameSite,
@@ -89,6 +92,7 @@ func (sm *SessionManager) Clear(w http.ResponseWriter) {
 		Name:     sessionCookieName,
 		Value:    "",
 		Path:     "/",
+		Domain:   sm.cookieDomain,
 		HttpOnly: true,
 		Secure:   sm.secure,
 		SameSite: sm.sameSite,

@@ -29,7 +29,7 @@ type ServerConfig struct {
 	HTTPListenAddr    string     `yaml:"http_listen_addr"`
 	HTTPSListenAddr   string     `yaml:"https_listen_addr"`
 	DevMode           bool       `yaml:"dev_mode"`
-	DomainNames       []string   `yaml:"domain_names"`
+	CookieDomain      string     `yaml:"cookie_domain"`
 	TLS               TLSConfig  `yaml:"tls"`
 	TrustProxyHeaders bool       `yaml:"trust_proxy_headers"`
 	CORS              CORSConfig `yaml:"cors"`
@@ -37,11 +37,12 @@ type ServerConfig struct {
 
 // TLSConfig defines autocert behaviour and TLS constraints.
 type TLSConfig struct {
-	Mode       string `yaml:"mode"`
-	CacheDir   string `yaml:"cache_dir"`
-	Email      string `yaml:"email"`
-	HSTSMaxAge int    `yaml:"hsts_max_age"`
-	MinVersion string `yaml:"min_version"`
+	Mode       string   `yaml:"mode"`
+	Domains    []string `yaml:"domains"`
+	CacheDir   string   `yaml:"cache_dir"`
+	Email      string   `yaml:"email"`
+	HSTSMaxAge int      `yaml:"hsts_max_age"`
+	MinVersion string   `yaml:"min_version"`
 }
 
 // CORSConfig controls CORS behaviour.
@@ -154,9 +155,9 @@ func defaultConfig() Config {
 			HTTPListenAddr:  ":80",
 			HTTPSListenAddr: ":443",
 			DevMode:         true,
-			DomainNames:     []string{"localhost"},
 			TLS: TLSConfig{
 				Mode:       "autocert",
+				Domains:    []string{"localhost"},
 				CacheDir:   "./.certs",
 				Email:      "",
 				HSTSMaxAge: 15552000,
@@ -215,7 +216,7 @@ func applyEnvOverrides(cfg *Config) {
 		"OIDCD_SERVER_HTTP_LISTEN_ADDR":  func(v string) { cfg.Server.HTTPListenAddr = v },
 		"OIDCD_SERVER_HTTPS_LISTEN_ADDR": func(v string) { cfg.Server.HTTPSListenAddr = v },
 		"OIDCD_SERVER_DEV_MODE":          func(v string) { cfg.Server.DevMode = parseBool(v, cfg.Server.DevMode) },
-		"OIDCD_SERVER_DOMAIN_NAMES":      func(v string) { cfg.Server.DomainNames = splitAndTrim(v) },
+		"OIDCD_SERVER_TLS_DOMAINS":       func(v string) { cfg.Server.TLS.Domains = splitAndTrim(v) },
 		"OIDCD_SERVER_TLS_CACHE_DIR":     func(v string) { cfg.Server.TLS.CacheDir = v },
 		"OIDCD_SERVER_TLS_EMAIL":         func(v string) { cfg.Server.TLS.Email = v },
 		"OIDCD_SERVER_TLS_MODE":          func(v string) { cfg.Server.TLS.Mode = v },
@@ -271,9 +272,34 @@ func (c Config) Validate() error {
 	if c.Server.PublicURL == "" {
 		return errors.New("server.public_url is required")
 	}
-	if !c.Server.DevMode && len(c.Server.DomainNames) == 0 {
-		return errors.New("server.domain_names must be provided in production")
+	if !c.Server.DevMode && len(c.Server.TLS.Domains) == 0 {
+		return errors.New("server.tls.domains must be provided in production")
 	}
+
+	// Validate cookie_domain matches public_url domain
+	if c.Server.CookieDomain != "" {
+		// Extract domain from public_url
+		publicURL := strings.TrimPrefix(c.Server.PublicURL, "http://")
+		publicURL = strings.TrimPrefix(publicURL, "https://")
+
+		// Remove port if present
+		if idx := strings.Index(publicURL, ":"); idx != -1 {
+			publicURL = publicURL[:idx]
+		}
+
+		// Remove path if present
+		if idx := strings.Index(publicURL, "/"); idx != -1 {
+			publicURL = publicURL[:idx]
+		}
+
+		// Cookie domain should be a suffix of the public URL domain
+		// e.g., public_url: gw.dev.nexxia.com.au -> cookie_domain: .dev.nexxia.com.au (valid)
+		cookieDomain := strings.TrimPrefix(c.Server.CookieDomain, ".")
+		if !strings.HasSuffix(publicURL, cookieDomain) {
+			return fmt.Errorf("server.cookie_domain '%s' does not match server.public_url domain '%s'", c.Server.CookieDomain, publicURL)
+		}
+	}
+
 	if len(c.Clients) == 0 {
 		return errors.New("at least one OAuth client must be configured")
 	}

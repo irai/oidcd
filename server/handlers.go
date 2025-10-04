@@ -106,7 +106,7 @@ func NewApp(ctx context.Context, cfg Config, logger *slog.Logger) (*App, error) 
 
 	// Initialize proxy if routes are configured
 	if len(cfg.Proxy.Routes) > 0 {
-		proxy, err := NewProxyManager(cfg.Proxy, tokens, sessions, store, cfg.Server.PublicURL, logger)
+		proxy, err := NewProxyManager(cfg.Proxy, tokens, sessions, store, cfg.Server, logger)
 		if err != nil {
 			return nil, fmt.Errorf("init proxy: %w", err)
 		}
