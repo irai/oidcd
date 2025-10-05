@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
@@ -218,6 +219,22 @@ func (pm *ProxyManager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Check if this is an OAuth callback (has code and state parameters)
+	// If so, strip them and redirect to clean URL - session cookie is already set
+	query := r.URL.Query()
+	if query.Get("code") != "" && query.Get("state") != "" {
+		// OAuth flow completed - session cookie should be set
+		// Clean the URL by removing OAuth parameters
+		query.Del("code")
+		query.Del("state")
+
+		cleanURL := r.URL
+		cleanURL.RawQuery = query.Encode()
+
+		http.Redirect(w, r, cleanURL.String(), http.StatusFound)
+		return
+	}
+
 	// Skip authentication for excluded paths (health checks, static assets)
 	if pm.shouldSkipAuth(route, r.URL.Path) {
 		pm.proxyRequest(w, r, route, nil)
@@ -371,6 +388,18 @@ func (pm *ProxyManager) sessionToAccessToken(session *Session, targetHost string
 // generateJTI generates a unique JWT ID
 func (pm *ProxyManager) generateJTI() string {
 	return fmt.Sprintf("proxy_%d", time.Now().UnixNano())
+}
+
+// generatePKCE generates PKCE verifier and challenge
+func (pm *ProxyManager) generatePKCE() (verifier string, challenge string) {
+	verifierBytes := make([]byte, 32)
+	rand.Read(verifierBytes)
+	verifier = base64.RawURLEncoding.EncodeToString(verifierBytes)
+
+	hash := sha256.Sum256([]byte(verifier))
+	challenge = base64.RawURLEncoding.EncodeToString(hash[:])
+
+	return verifier, challenge
 }
 
 // enhanceRequestWithAuth injects JWT and user claims into the forwarded request
@@ -539,11 +568,36 @@ func (pm *ProxyManager) handleAuthError(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
-	// For browser requests, return 401 Unauthorized
-	// In dev mode with local provider, users should access /dev/auth separately for debugging
-	// In production, this would return an error since proxy routes require pre-established sessions
-	w.Header().Set("WWW-Authenticate", `Session realm="gateway"`)
-	http.Error(w, "Unauthorized: No valid session found for proxy route", http.StatusUnauthorized)
+	// For browser requests, initiate authentication flow to create a session
+	// Store the original URL so we can redirect back after authentication
+	scheme := pm.schemeFromRequest(r)
+	originalURL := fmt.Sprintf("%s://%s%s", scheme, r.Host, r.URL.String())
+
+	// Generate PKCE for public client
+	_, challenge := pm.generatePKCE()
+	state := pm.generateJTI()
+
+	// Note: PKCE verifier is not stored because proxy uses session cookies, not token exchange
+	// The auth code will be ignored - only the session cookie matters
+
+	// Redirect to /authorize which will:
+	// 1. Check for existing session (will fail)
+	// 2. Redirect to identity provider (or local provider in dev mode)
+	// 3. Create session after successful authentication
+	// 4. Redirect back to originalURL with auth code
+	// 5. Proxy will detect session and forward request
+
+	authParams := url.Values{}
+	authParams.Set("response_type", "code")
+	authParams.Set("client_id", "gateway-proxy")
+	authParams.Set("redirect_uri", originalURL)
+	authParams.Set("scope", "openid profile email")
+	authParams.Set("state", state)
+	authParams.Set("code_challenge", challenge)
+	authParams.Set("code_challenge_method", "S256")
+
+	authURL := "/authorize?" + authParams.Encode()
+	http.Redirect(w, r, authURL, http.StatusFound)
 }
 
 // handleOAuthCallback processes the OAuth callback with authorization code
