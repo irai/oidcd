@@ -273,40 +273,18 @@ proxy:
       require_auth: false
       preserve_host: false
 
-    # Protected route - authentication required
+    # Protected route - authentication required via session cookie
     - host: demo-app.example.com
       target: http://backend2:3000
       require_auth: true
       preserve_host: false
-
-    # Advanced - inject JWT and user claims as headers
-    - host: demo-api.example.com
-      target: http://backend3:3000
-      require_auth: true
-      inject_jwt: true
-      jwt_header_name: X-Auth-Token
-      inject_user_claims: true
-      claims_headers:
-        email: X-User-Email
-        name: X-User-Name
-        sub: X-User-ID
 ```
 
 **Proxy Route Options:**
 - `host`: Hostname to match (from HTTP Host header)
 - `target`: Backend service URL
 - `require_auth`: If true, enforce authentication before proxying
-- `required_scopes`: Optional list of scopes required for access
-- `strip_prefix`: Remove URL prefix before proxying
 - `preserve_host`: Keep original Host header when proxying
-- `timeout`: Custom timeout for this route
-- `inject_jwt`: Automatically inject JWT as header
-- `jwt_header_name`: Header name for JWT (default: `Authorization`)
-- `inject_as_bearer`: If true, format as `Bearer <token>`
-- `inject_user_claims`: Extract claims from JWT and inject as headers
-- `claims_headers`: Map of claim name to header name
-- `skip_paths`: Paths that bypass authentication (e.g., health checks)
-- `auth_redirect_url`: Custom redirect URL after authentication
 
 **Authentication Flow:**
 1. Request to protected route without session → redirect to gateway `/authorize`
@@ -318,10 +296,6 @@ proxy:
 **Security Features:**
 - Session cookies with configurable domain (supports subdomain sharing)
 - Automatic session validation before each proxied request
-- Optional JWT injection with standard Bearer format
-- User claim injection as custom headers
-- Scope-based access control per route
-- Path-based authentication bypass for health checks
 
 **When to Use:**
 - Protecting legacy applications without code changes
@@ -332,16 +306,9 @@ proxy:
 - Centralized authentication policy enforcement
 
 **Backend Integration:**
-The backend service receives requests with optional injected headers:
-- `Authorization: Bearer <jwt>` (if `inject_jwt: true` and `inject_as_bearer: true`)
-- `X-User-Email: user@example.com` (if `inject_user_claims: true`)
-- `X-User-Name: John Doe` (if `inject_user_claims: true`)
-- `X-User-ID: auth0|123456` (if `inject_user_claims: true`)
-
-Backend can:
-1. **Trust the headers** (gateway is the only entry point)
-2. **Validate the JWT** using the gateway's JWKS (defense in depth)
-3. **Use user context** for business logic, logging, or authorization
+The backend service receives authenticated requests after the gateway validates the session. Backends can:
+1. **Trust the gateway** (gateway is the only entry point and enforces authentication)
+2. **Implement application-specific authorization** based on business logic
 
 ---
 
@@ -393,119 +360,108 @@ Backend can:
 
 ## 10. Configuration (Summary)
 
-* **Server**: public URL (issuer), dev/prod mode, HTTP/HTTPS listen addresses, cookie domain (for subdomain sharing), TLS config, CORS, proxy trust.
-* **TLS**: mode (autocert/certmagic/manual), domains list, cache directory, ACME email, HSTS max age, minimum TLS version.
-* **Keys**: algorithm (RS256), rotation interval, persistent key path in prod.
-* **Providers**: Auth0 & Entra: issuer URL, client id/secret, tenant ID (for Entra). This is what oidcd uses to authenticate WITH upstream IdPs.
+* **Server**: server_id, public URL (issuer), dev/prod mode, HTTP/HTTPS listen addresses, cookie domain (for subdomain sharing), TLS config, proxy trust, secrets path for certificates and keys.
+* **TLS**: domains list, ACME email, minimum TLS version (1.2 or 1.3).
+* **Secrets Path**: Directory for all secrets; TLS certificates stored in `secrets_path/tls`, JWKS keys in `secrets_path/keys`.
+* **Providers**: Auth0 & Entra: issuer URL, client id/secret. This is what oidcd uses to authenticate WITH upstream IdPs. Configured with a default provider selection.
 * **OAuth2 Clients**: OAuth2 clients that can authenticate with oidcd (BFF apps, SPAs, service accounts). Includes: public/confidential, redirect URIs, allowed scopes/audiences. Optional if using proxy-only mode.
-* **Tokens**: access TTL (5–10m), refresh TTL (e.g., 30d), rotation on, default audience.
-* **Sessions**: TTL (e.g., 12h), sliding window optional.
-* **Proxy**: routes with host-based routing, authentication requirements, JWT/claims injection, scope enforcement. Uses session cookies, not OAuth2 flows.
+* **Proxy**: routes with host-based routing, authentication requirements, preserve host option. Uses session cookies, not OAuth2 flows.
+
+**Note:** CORS origins are automatically inferred from OAuth2 client redirect_uris and proxy route targets. Default allowed headers: Authorization, Content-Type. Default allowed methods: GET, POST, OPTIONS.
 
 ### Configuration Example
 
 ```yaml
 server:
-  public_url: http://localhost:8080
-  dev_listen_addr: 0.0.0.0:8080
-  http_listen_addr: :80
-  https_listen_addr: :443
-  dev_mode: true
-  cookie_domain: ""  # Empty for localhost, or .example.com for subdomain sharing
-  tls:
-    mode: autocert
-    domains:
-      - localhost
-      - auth.example.com
-      - app1.example.com
-      - app2.example.com
-    cache_dir: ./.certs
-    email: admin@example.com
-    hsts_max_age: 15552000
-    min_version: "1.2"
-  trust_proxy_headers: false
-  cors:
-    client_origin_urls:
-      - http://localhost:3001
-    allowed_headers:
-      - Authorization
-      - Content-Type
-    allowed_methods:
-      - GET
-      - POST
-      - OPTIONS
+    server_id: oidcd
+    public_url: http://localhost:8080
+    dev_listen_addr: 0.0.0.0:8080
+    http_listen_addr: :80
+    https_listen_addr: :443
+    dev_mode: true
+    cookie_domain: ""  # Empty for localhost, or .example.com for subdomain sharing
 
-keys:
-  jwks_path: ""
-  rotate_interval: 168h0m0s
-  alg: RS256
+    # Directory for all secrets (certificates and keys)
+    # TLS certificates: secrets_path/tls
+    # JWKS keys: secrets_path/keys
+    secrets_path: .secrets
+
+    tls:
+        domains:
+            - localhost
+            - auth.example.com
+            - app1.example.com
+            - app2.example.com
+        email: admin@example.com
+        min_version: "1.2"
+    trust_proxy_headers: false
+
+    # CORS origins are automatically inferred from:
+    #   - OAuth2 client redirect_uris
+    #   - Proxy route targets
+    # Default allowed headers: Authorization, Content-Type
+    # Default allowed methods: GET, POST, OPTIONS
+
+    # What oidcd uses to authenticate with upstream IdP (Entra/Auth0)
+    providers:
+        default: entra
+        auth0:
+            issuer: ""
+            client_id: ""
+            client_secret: ""
+        entra:
+            issuer: https://login.microsoftonline.com/<tenant-id>/v2.0
+            client_id: "your-client-id"
+        extra: {}
 
 # OAuth2 clients that can authenticate WITH oidcd
 # These are for BFF applications, SPAs, or service accounts doing OAuth2 flows
-# Not required if using proxy-only mode (proxy uses session cookies, not OAuth2)
+# Not required if using proxy-only mode (proxy client is auto-registered internally)
 oauth2_clients:
-  - client_id: webapp
-    client_secret: ""
-    redirect_uris:
-      - http://localhost:3001/callback
-    scopes:
-      - openid
-      - profile
-      - email
-    audiences:
-      - ai-gateway
-
-# What oidcd uses to authenticate with upstream IdP (Entra/Auth0)
-providers:
-  default: entra
-  entra:
-    issuer: https://login.microsoftonline.com/common/v2.0
-    client_id: "your-client-id"
-    client_secret: "your-client-secret"
-    tenant_id: "your-tenant-id"
-
-tokens:
-  access_ttl: 10m0s
-  refresh_ttl: 720h0m0s
-  rotate_refresh: true
-  audience_default: ai-gateway
-
-sessions:
-  ttl: 12h0m0s
+    - client_id: webapp
+      client_secret: ""
+      redirect_uris:
+        - http://localhost:3001/callback
+      scopes:
+        - openid
+        - profile
+        - email
+      audiences:
+        - oidcd
 
 # Reverse proxy routes (session-based authentication, no OAuth2 flow needed)
 # Proxy mode protects existing applications without requiring code changes
 proxy:
-  routes:
-    - host: demo-public.example.com
-      target: http://backend1:3000
-      require_auth: false
+    routes:
+        # Public route - no authentication required
+        - host: demo-public.example.com
+          target: http://backend1:3000
+          require_auth: false
+          preserve_host: false
 
-    - host: demo-app.example.com
-      target: http://backend2:3000
-      require_auth: true
-      inject_jwt: true
-      inject_as_bearer: true
+        # Protected route - authentication required via session cookie
+        - host: demo-app.example.com
+          target: http://backend2:3000
+          require_auth: true
+          preserve_host: false
 ```
 
 ### Environment Variable Overrides
 
 Key configuration values can be overridden via environment variables:
 
+* `OIDCD_SERVER_SERVER_ID` — Override server.server_id
 * `OIDCD_SERVER_PUBLIC_URL` — Override server.public_url
 * `OIDCD_SERVER_DEV_LISTEN_ADDR` — Override server.dev_listen_addr
 * `OIDCD_SERVER_HTTP_LISTEN_ADDR` — Override server.http_listen_addr
 * `OIDCD_SERVER_HTTPS_LISTEN_ADDR` — Override server.https_listen_addr
 * `OIDCD_SERVER_DEV_MODE` — Override server.dev_mode (true/false)
+* `OIDCD_SERVER_SECRETS_PATH` — Override server.secrets_path
 * `OIDCD_SERVER_TLS_DOMAINS` — Override server.tls.domains (comma-separated)
-* `OIDCD_SERVER_TLS_CACHE_DIR` — Override server.tls.cache_dir
 * `OIDCD_SERVER_TLS_EMAIL` — Override server.tls.email
-* `OIDCD_SERVER_TLS_MODE` — Override server.tls.mode
-* `OIDCD_SERVER_CORS_CLIENT_ORIGIN_URLS` — Override server.cors.client_origin_urls (comma-separated)
-* `OIDCD_KEYS_JWKS_PATH` — Override keys.jwks_path
-* `OIDCD_TOKENS_ACCESS_TTL` — Override tokens.access_ttl
-* `OIDCD_TOKENS_REFRESH_TTL` — Override tokens.refresh_ttl
-* `OIDCD_TOKENS_ROTATE_REFRESH` — Override tokens.rotate_refresh (true/false)
+* `OIDCD_SERVER_TLS_MIN_VERSION` — Override server.tls.min_version
+
+**Note:** CORS configuration is automatic based on OAuth2 client redirect URIs and proxy targets.
 
 ---
 

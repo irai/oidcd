@@ -35,7 +35,7 @@ Browser → Your BFF App → OIDC Gateway → Microsoft 365
 
 1. **Register your application in config.yaml:**
 ```yaml
-clients:
+oauth2_clients:
   - client_id: "your-app"
     client_secret: ""  # Leave empty for public clients
     redirect_uris:
@@ -45,7 +45,7 @@ clients:
       - profile
       - email
     audiences:
-      - ai-gateway
+      - oidcd
 ```
 
 2. **Add these dependencies to your app:**
@@ -185,7 +185,7 @@ func main() {
     validator := client.NewValidator(client.ValidatorConfig{
         Issuer:            "http://localhost:8080",
         JWKSURL:           "http://localhost:8080/.well-known/jwks.json",
-        ExpectedAudiences: []string{"ai-gateway"},
+        ExpectedAudiences: []string{"oidcd"},
     })
 
     // Protect your endpoints
@@ -226,13 +226,13 @@ services:
   your-service:
     build: .
     environment:
-      - OIDC_ISSUER=http://oidcd:8080
-      - JWKS_URL=http://oidcd:8080/.well-known/jwks.json
-      - AUDIENCE=ai-gateway
+      - OIDC_ISSUER=http://oidcd-gateway:8080
+      - JWKS_URL=http://oidcd-gateway:8080/.well-known/jwks.json
+      - AUDIENCE=oidcd
     networks:
       - oidc-net
     depends_on:
-      oidcd:
+      oidcd-gateway:
         condition: service_healthy
 ```
 
@@ -259,26 +259,22 @@ proxy:
     - host: myapp.example.com
       target: http://myapp:3000
       require_auth: false
+      preserve_host: false
 
-    # Protected service (requires JWT)
+    # Protected service (requires authentication via session cookie)
     - host: api.example.com
       target: http://myapi:3000
       require_auth: true
-      required_scopes:
-        - api.read
-        - api.write
+      preserve_host: false
 ```
 
-2. **Your service receives pre-validated requests:**
+2. **Your service receives pre-authenticated requests:**
 ```go
-// Your service doesn't need to validate tokens
-// Gateway already did it before proxying
+// Your service doesn't need to validate authentication
+// Gateway already validated the session before proxying
 func handler(w http.ResponseWriter, r *http.Request) {
-    // Optional: Gateway can forward user info in headers
-    userID := r.Header.Get("X-User-ID")
-
     // Your business logic
-    w.Write([]byte("Authenticated user: " + userID))
+    w.Write([]byte("Authenticated request received"))
 }
 ```
 
@@ -312,19 +308,19 @@ services:
     container_name: myapp
     environment:
       # For BFF pattern
-      - OIDC_ISSUER=http://oidcd:8080
+      - OIDC_ISSUER=http://oidcd-gateway:8080
       - CLIENT_ID=myapp
       - REDIRECT_URL=http://localhost:3002/callback
 
       # For microservice pattern
-      - JWKS_URL=http://oidcd:8080/.well-known/jwks.json
-      - AUDIENCE=ai-gateway
+      - JWKS_URL=http://oidcd-gateway:8080/.well-known/jwks.json
+      - AUDIENCE=oidcd
     ports:
       - "3002:3000"  # Only if directly accessible
     networks:
       - oidc-net
     depends_on:
-      oidcd:
+      oidcd-gateway:
         condition: service_healthy
 ```
 
@@ -358,7 +354,7 @@ docker-compose up -d
 {
   "iss": "http://localhost:8080",
   "sub": "user123",
-  "aud": "ai-gateway",
+  "aud": "oidcd",
   "exp": 1234567890,
   "iat": 1234567800,
   "jti": "token-id",
@@ -381,7 +377,7 @@ docker-compose up -d
 | `CLIENT_SECRET` | Client secret (confidential clients only) | `secret123` |
 | `REDIRECT_URL` | OAuth callback URL | `http://localhost:3000/callback` |
 | `JWKS_URL` | JWKS endpoint for validation | `http://localhost:8080/.well-known/jwks.json` |
-| `AUDIENCE` | Expected token audience | `ai-gateway` |
+| `AUDIENCE` | Expected token audience | `oidcd` |
 
 ---
 
