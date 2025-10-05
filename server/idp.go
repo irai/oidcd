@@ -142,14 +142,14 @@ func BuildProviders(ctx context.Context, cfg Config, logger *slog.Logger) (map[s
 		return nil
 	}
 
-	if err := add("auth0", cfg.Providers.Auth0); err != nil {
+	if err := add("auth0", cfg.Server.Providers.Auth0); err != nil {
 		if cfg.Server.DevMode {
 			logger.Warn("provider init failed", "provider", "auth0", "error", err)
 		} else {
 			return nil, err
 		}
 	}
-	if err := add("entra", cfg.Providers.Entra); err != nil {
+	if err := add("entra", cfg.Server.Providers.Entra); err != nil {
 		if cfg.Server.DevMode {
 			logger.Warn("provider init failed", "provider", "entra", "error", err)
 		} else {
@@ -157,7 +157,7 @@ func BuildProviders(ctx context.Context, cfg Config, logger *slog.Logger) (map[s
 		}
 	}
 
-	for name, upstream := range cfg.Providers.Extra {
+	for name, upstream := range cfg.Server.Providers.Extra {
 		if err := add(name, upstream); err != nil {
 			if cfg.Server.DevMode {
 				logger.Warn("provider init failed", "provider", name, "error", err)
@@ -167,16 +167,16 @@ func BuildProviders(ctx context.Context, cfg Config, logger *slog.Logger) (map[s
 		}
 	}
 
-	if cfg.Providers.Default != "" {
-		if _, ok := providers[cfg.Providers.Default]; !ok {
+	if cfg.Server.Providers.Default != "" {
+		if _, ok := providers[cfg.Server.Providers.Default]; !ok {
 			if cfg.Server.DevMode {
-				logger.Warn("default provider unavailable", "provider", cfg.Providers.Default)
+				logger.Warn("default provider unavailable", "provider", cfg.Server.Providers.Default)
 			} else {
-				return nil, fmt.Errorf("default provider %s not configured", cfg.Providers.Default)
+				return nil, fmt.Errorf("default provider %s not configured", cfg.Server.Providers.Default)
 			}
 		}
 	} else if !cfg.Server.DevMode {
-		return nil, fmt.Errorf("default provider %s not configured", cfg.Providers.Default)
+		return nil, fmt.Errorf("default provider %s not configured", cfg.Server.Providers.Default)
 	}
 
 	return providers, nil

@@ -11,7 +11,6 @@ import (
 
 func TestSessionManagerCreateSetsCookie(t *testing.T) {
 	cfg := DefaultConfig()
-	cfg.Sessions.TTL = time.Hour
 
 	store := NewInMemoryStore()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -47,7 +46,6 @@ func TestSessionManagerCreateSetsCookie(t *testing.T) {
 
 func TestSessionManagerFetchExtendsExpiry(t *testing.T) {
 	cfg := DefaultConfig()
-	cfg.Sessions.TTL = time.Minute
 
 	store := NewInMemoryStore()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -78,7 +76,6 @@ func TestSessionManagerFetchExtendsExpiry(t *testing.T) {
 
 func TestSessionManagerFetchExpired(t *testing.T) {
 	cfg := DefaultConfig()
-	cfg.Sessions.TTL = time.Minute
 
 	store := NewInMemoryStore()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))

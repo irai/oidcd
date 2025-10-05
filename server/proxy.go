@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
@@ -21,15 +20,16 @@ import (
 
 // ProxyManager handles reverse proxy routing based on Host header.
 type ProxyManager struct {
-	routes         map[string]*proxyRoute
-	validator      *TokenService
-	sessionManager *SessionManager
-	store          *InMemoryStore
-	logger         *slog.Logger
-	gatewayIssuer  string
-	cookieDomain   string
-	secure         bool
-	sameSite       http.SameSite
+	routes            map[string]*proxyRoute
+	validator         *TokenService
+	sessionManager    *SessionManager
+	store             *InMemoryStore
+	logger            *slog.Logger
+	gatewayIssuer     string
+	cookieDomain      string
+	secure            bool
+	sameSite          http.SameSite
+	trustProxyHeaders bool
 }
 
 type proxyRoute struct {
@@ -75,15 +75,16 @@ func NewProxyManager(cfg ProxyConfig, validator *TokenService, sessionManager *S
 	secure := !serverCfg.DevMode
 
 	pm := &ProxyManager{
-		routes:         make(map[string]*proxyRoute),
-		validator:      validator,
-		sessionManager: sessionManager,
-		store:          store,
-		logger:         logger,
-		gatewayIssuer:  strings.TrimSuffix(serverCfg.PublicURL, "/"),
-		cookieDomain:   serverCfg.CookieDomain,
-		secure:         secure,
-		sameSite:       sameSite,
+		routes:            make(map[string]*proxyRoute),
+		validator:         validator,
+		sessionManager:    sessionManager,
+		store:             store,
+		logger:            logger,
+		gatewayIssuer:     strings.TrimSuffix(serverCfg.PublicURL, "/"),
+		cookieDomain:      serverCfg.CookieDomain,
+		secure:            secure,
+		sameSite:          sameSite,
+		trustProxyHeaders: serverCfg.TrustProxyHeaders,
 	}
 
 	for _, routeCfg := range cfg.Routes {
@@ -157,9 +158,11 @@ func (pm *ProxyManager) addRoute(cfg ProxyRoute) error {
 
 		// Set standard proxy headers
 		if clientIP, _, err := net.SplitHostPort(req.RemoteAddr); err == nil {
-			prior := req.Header.Get("X-Forwarded-For")
-			if prior != "" {
-				clientIP = prior + ", " + clientIP
+			// Only trust existing X-Forwarded-For if configured to do so
+			if pm.trustProxyHeaders {
+				if prior := req.Header.Get("X-Forwarded-For"); prior != "" {
+					clientIP = prior + ", " + clientIP
+				}
 			}
 			req.Header.Set("X-Forwarded-For", clientIP)
 		}
@@ -212,12 +215,6 @@ func (pm *ProxyManager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		pm.logger.Debug("no proxy route for host", "host", host, "path", r.URL.Path)
 		http.Error(w, "Not Found", http.StatusNotFound)
-		return
-	}
-
-	// Check if this is an OAuth callback (has authorization code)
-	if code := r.URL.Query().Get("code"); code != "" && r.URL.Query().Get("state") != "" {
-		pm.handleOAuthCallback(w, r, route)
 		return
 	}
 
@@ -542,44 +539,16 @@ func (pm *ProxyManager) handleAuthError(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
-	// For browser requests, redirect to authentication
-	redirectURL := route.authRedirectURL
-	if redirectURL == "" {
-		redirectURL = "/authorize" // Default gateway auth endpoint
-	}
-
-	// Store original request path for post-auth redirect
-	// Encode the original host and path in the state parameter
-	state := pm.generateStateParameter(r.Host, r.URL.String())
-
-	// Generate PKCE parameters
-	verifierBytes := make([]byte, 32)
-	if _, err := rand.Read(verifierBytes); err != nil {
-		pm.logger.Error("failed to generate PKCE verifier", "error", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
-		return
-	}
-	verifier := base64.RawURLEncoding.EncodeToString(verifierBytes)
-	sum := sha256.Sum256([]byte(verifier))
-	challenge := base64.RawURLEncoding.EncodeToString(sum[:])
-
-	// TODO: Store verifier in session for token exchange
-	// For now, we'll need to implement session storage for PKCE verifiers
-
-	// Build the redirect URI as a fixed callback endpoint
+	// For browser requests, redirect to dev auth page which will create a session
+	// After session is created, user will be redirected back to original URL
 	scheme := "http"
 	if r.TLS != nil {
 		scheme = "https"
 	}
-	callbackURI := fmt.Sprintf("%s://%s/callback/proxy", scheme, r.Host)
+	originalURL := fmt.Sprintf("%s://%s%s", scheme, r.Host, r.URL.String())
 
-	// Build auth URL with current request context and PKCE
-	authURL := fmt.Sprintf("%s?client_id=gateway-proxy&redirect_uri=%s&response_type=code&scope=openid profile email&state=%s&code_challenge=%s&code_challenge_method=S256",
-		redirectURL,
-		url.QueryEscape(callbackURI),
-		state,
-		challenge)
-
+	// Redirect to dev auth with return URL
+	authURL := fmt.Sprintf("/dev/auth?return_to=%s", url.QueryEscape(originalURL))
 	http.Redirect(w, r, authURL, http.StatusFound)
 }
 
@@ -758,8 +727,10 @@ func (pm *ProxyManager) schemeFromRequest(r *http.Request) string {
 	if r.TLS != nil {
 		return "https"
 	}
-	if proto := r.Header.Get("X-Forwarded-Proto"); proto != "" {
-		return proto
+	if pm.trustProxyHeaders {
+		if proto := r.Header.Get("X-Forwarded-Proto"); proto != "" {
+			return proto
+		}
 	}
 	return "http"
 }

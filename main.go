@@ -110,8 +110,11 @@ func main() {
 			}
 		}()
 	} else {
+		// Build TLS cache path from secrets directory
+		tlsCachePath := filepath.Join(cfg.Server.SecretsPath, "tls")
+
 		m := &autocert.Manager{
-			Cache:      autocert.DirCache(cfg.Server.TLS.CacheDir),
+			Cache:      autocert.DirCache(tlsCachePath),
 			Prompt:     autocert.AcceptTOS,
 			HostPolicy: autocert.HostWhitelist(cfg.Server.TLS.Domains...),
 			Email:      cfg.Server.TLS.Email,
@@ -164,7 +167,7 @@ func withHSTS(h http.Handler, cfg server.Config) http.Handler {
 	if cfg.Server.DevMode {
 		return h
 	}
-	return server.SecurityHeadersMiddleware(cfg.Server.TLS.HSTSMaxAge)(h)
+	return server.SecurityHeadersMiddleware()(h)
 }
 
 func runConnect(ctx context.Context, cfg server.Config, logger *slog.Logger, providerName string, provided map[string]server.IdentityProvider, httpClient *http.Client) error {
@@ -277,8 +280,6 @@ func runSetup(path string, logger *slog.Logger) (server.Config, error) {
 
 	if devMode {
 		cfg.Server.DevListenAddr = ask(reader, "Gateway dev listen address", cfg.Server.DevListenAddr)
-		corsOrigins := ask(reader, "Client CORS origin URLs (comma separated)", strings.Join(cfg.Server.CORS.ClientOriginURLs, ", "))
-		cfg.Server.CORS.ClientOriginURLs = normalizeList(corsOrigins, cfg.Server.CORS.ClientOriginURLs)
 	} else {
 		domain := askRequired(reader, "Primary public domain (e.g. auth.example.com)")
 		cfg.Server.TLS.Domains = []string{domain}
@@ -293,24 +294,24 @@ func runSetup(path string, logger *slog.Logger) (server.Config, error) {
 	redirect := ask(reader, "Client redirect URI", "http://127.0.0.1:3000/callback")
 	redirects := normalizeList(redirect, []string{"http://127.0.0.1:3000/callback"})
 
-	cfg.Clients = []server.ClientConfig{{
+	cfg.OAuth2Clients = []server.ClientConfig{{
 		ClientID:     clientID,
 		ClientSecret: "",
 		RedirectURIs: redirects,
 		Scopes:       []string{"openid", "profile", "email"},
-		Audiences:    []string{cfg.Tokens.AudienceDefault},
+		Audiences:    []string{cfg.Server.ServerID},
 	}}
 
 	tenantID := askRequired(reader, "Microsoft Entra tenant ID (GUID)")
 	upstreamClientID := askRequired(reader, "Gateway app registration client ID")
 	upstreamClientSecret := askRequired(reader, "Gateway app registration client secret")
 
-	cfg.Providers.Default = "entra"
-	cfg.Providers.Entra.Issuer = "https://login.microsoftonline.com/common/v2.0"
-	cfg.Providers.Entra.TenantID = tenantID
-	cfg.Providers.Entra.ClientID = upstreamClientID
-	cfg.Providers.Entra.ClientSecret = upstreamClientSecret
-	cfg.Providers.Auth0 = server.UpstreamProvider{}
+	cfg.Server.Providers.Default = "entra"
+	cfg.Server.Providers.Entra.Issuer = "https://login.microsoftonline.com/common/v2.0"
+	cfg.Server.Providers.Entra.TenantID = tenantID
+	cfg.Server.Providers.Entra.ClientID = upstreamClientID
+	cfg.Server.Providers.Entra.ClientSecret = upstreamClientSecret
+	cfg.Server.Providers.Auth0 = server.UpstreamProvider{}
 
 	if err := writeConfigFile(path, cfg); err != nil {
 		return server.Config{}, err

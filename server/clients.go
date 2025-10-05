@@ -59,9 +59,14 @@ func (cr *ClientRegistry) Authenticate(id, secret string) (*Client, error) {
 }
 
 // ValidRedirect ensures the redirect URI is registered.
+// Supports "*" wildcard for internal proxy client only.
 func (c *Client) ValidRedirect(uri string) bool {
 	for _, u := range c.RedirectURIs {
 		if u == uri {
+			return true
+		}
+		// Allow wildcard for internal proxy client
+		if u == "*" && c.ClientID == "gateway-proxy" {
 			return true
 		}
 	}

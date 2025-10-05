@@ -10,14 +10,14 @@ import (
 func TestNewAppKeepsConfiguredDefaultProvider(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Server.DevMode = true
-	cfg.Clients = []ClientConfig{{
+	cfg.OAuth2Clients = []ClientConfig{{
 		ClientID:     "test-client",
 		RedirectURIs: []string{"http://localhost/callback"},
 		Scopes:       []string{"openid"},
 		Audiences:    []string{"api://default"},
 	}}
-	cfg.Providers.Default = "entra"
-	cfg.Providers.Entra = UpstreamProvider{}
+	cfg.Server.Providers.Default = "entra"
+	cfg.Server.Providers.Entra = UpstreamProvider{}
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 

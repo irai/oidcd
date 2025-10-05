@@ -330,7 +330,7 @@ func (a *App) handleDevAuthIndex(w http.ResponseWriter, r *http.Request) {
 		Providers:       providers,
 		DefaultProvider: a.DefaultProvider,
 		ScopeDefault:    "openid profile email",
-		AudienceDefault: a.Config.Tokens.AudienceDefault,
+		AudienceDefault: a.Config.Server.ServerID,
 		Steps: []devAuthStep{
 			{Number: 1, Title: "Configure request", Status: "active"},
 			{Number: 2, Title: "Review redirect", Status: "pending"},
@@ -568,21 +568,21 @@ func (a *App) buildDevAuthView(flow *DebugAuthFlow, step string, r *http.Request
 		}
 	}
 
-	if tenant := a.Config.Providers.Entra.TenantID; tenant != "" {
+	if tenant := a.Config.Server.Providers.Entra.TenantID; tenant != "" {
 		reqParams = append(reqParams, kv{
 			Key:   "providers.entra.tenant_id",
 			Value: tenant,
 			Info:  "Value from config.yaml providers.entra.tenant_id; must match the Azure AD tenant ID in the identity provider.",
 		})
 	}
-	if id := a.Config.Providers.Entra.ClientID; id != "" {
+	if id := a.Config.Server.Providers.Entra.ClientID; id != "" {
 		reqParams = append(reqParams, kv{
 			Key:   "providers.entra.client_id",
 			Value: id,
 			Info:  "Client ID from config.yaml providers.entra.client_id; must match the registered app in the identity provider.",
 		})
 	}
-	if secret := a.Config.Providers.Entra.ClientSecret; secret != "" {
+	if secret := a.Config.Server.Providers.Entra.ClientSecret; secret != "" {
 		reqParams = append(reqParams, kv{
 			Key:   "providers.entra.client_secret",
 			Value: maskSecret(secret),
@@ -741,15 +741,15 @@ func authorizeParamNotes(cfg Config, flow *DebugAuthFlow) map[string]string {
 	set("code_challenge", "PKCE challenge derived from the code_verifier the debugger stores. No configuration required; verifier never leaves the gateway.")
 	set("code_challenge_method", "Always S256 to enforce PKCE. No configuration needed; upstream must support S256.")
 	set("idp", "Selected provider key. Must match a provider defined in config.yaml providers.*, and align with the IdP registration (tenant, client ID, redirect).")
-	set("audience", fmt.Sprintf("Target resource audience. Defaults to config.yaml tokens.audience_default (%s). Ensure upstream understands this value if it validates audience.", cfg.Tokens.AudienceDefault))
+	set("audience", fmt.Sprintf("Target resource audience. Defaults to config.yaml tokens.audience_default (%s). Ensure upstream understands this value if it validates audience.", cfg.Server.ServerID))
 
 	if flow != nil {
 		set("client_id", fmt.Sprintf("Client ID %q taken from config.yaml (first client entry). Must match the identity provider application.", flow.AuthParams.Get("client_id")))
 		set("redirect_uri", fmt.Sprintf("Debugger callback %s. Ensure this URI appears in config.yaml clients[].redirect_uris and is registered in the identity provider.", flow.AuthParams.Get("redirect_uri")))
-		if flow.Audience != "" && flow.Audience != cfg.Tokens.AudienceDefault {
+		if flow.Audience != "" && flow.Audience != cfg.Server.ServerID {
 			set("audience", fmt.Sprintf("Target audience %q requested. Must be configured for the client in config.yaml and allowed by the upstream resource.", flow.Audience))
 		}
-		if ten := cfg.Providers.Entra.TenantID; ten != "" {
+		if ten := cfg.Server.Providers.Entra.TenantID; ten != "" {
 			set("idp", fmt.Sprintf("Using provider %q (tenant %s). Tenant ID must match the IdP directory configuration.", flow.Provider, ten))
 		}
 	}

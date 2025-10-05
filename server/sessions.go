@@ -30,7 +30,7 @@ func NewSessionManager(cfg Config, store *InMemoryStore, logger *slog.Logger) *S
 	return &SessionManager{
 		store:        store,
 		logger:       logger,
-		ttl:          cfg.Sessions.TTL,
+		ttl:          DefaultSessionTTL,
 		secure:       secure,
 		sameSite:     sameSite,
 		cookieDomain: cfg.Server.CookieDomain,

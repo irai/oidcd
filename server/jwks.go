@@ -33,14 +33,21 @@ type JWKSManager struct {
 }
 
 // NewJWKSManager loads or creates signing keys.
-func NewJWKSManager(cfg KeyConfig, logger *slog.Logger) (*JWKSManager, error) {
+// Uses hardcoded defaults: RS256 algorithm, 7-day rotation interval
+func NewJWKSManager(secretsPath string, logger *slog.Logger) (*JWKSManager, error) {
+	// Build keys path from secrets directory
+	var keysPath string
+	if secretsPath != "" {
+		keysPath = filepath.Join(secretsPath, "keys", "jwks.json")
+	}
+
 	manager := &JWKSManager{
-		rotateEvery: cfg.RotateInterval,
-		storePath:   cfg.JWKSPath,
+		rotateEvery: 168 * time.Hour, // 7 days
+		storePath:   keysPath,
 		logger:      logger,
 	}
 
-	if cfg.JWKSPath != "" {
+	if keysPath != "" {
 		if err := manager.loadFromDisk(); err != nil {
 			if !errors.Is(err, os.ErrNotExist) {
 				return nil, err

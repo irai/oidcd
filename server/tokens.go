@@ -48,13 +48,13 @@ type TokenService struct {
 func NewTokenService(cfg Config, store *InMemoryStore, jwks *JWKSManager, logger *slog.Logger) *TokenService {
 	return &TokenService{
 		issuer:        strings.TrimSuffix(cfg.Server.PublicURL, "/"),
-		accessTTL:     cfg.Tokens.AccessTTL,
-		refreshTTL:    cfg.Tokens.RefreshTTL,
-		rotateRefresh: cfg.Tokens.RotateRefresh,
+		accessTTL:     DefaultAccessTTL,
+		refreshTTL:    DefaultRefreshTTL,
+		rotateRefresh: DefaultRotateRefresh,
 		store:         store,
 		jwks:          jwks,
 		logger:        logger,
-		audDefault:    cfg.Tokens.AudienceDefault,
+		audDefault:    cfg.Server.ServerID,
 	}
 }
 

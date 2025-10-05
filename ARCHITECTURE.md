@@ -396,11 +396,11 @@ Backend can:
 * **Server**: public URL (issuer), dev/prod mode, HTTP/HTTPS listen addresses, cookie domain (for subdomain sharing), TLS config, CORS, proxy trust.
 * **TLS**: mode (autocert/certmagic/manual), domains list, cache directory, ACME email, HSTS max age, minimum TLS version.
 * **Keys**: algorithm (RS256), rotation interval, persistent key path in prod.
-* **Providers**: Auth0 & Entra: issuer URL, client id/secret, tenant ID (for Entra).
-* **Clients**: public/confidential, redirect URIs, allowed scopes/audiences.
+* **Providers**: Auth0 & Entra: issuer URL, client id/secret, tenant ID (for Entra). This is what oidcd uses to authenticate WITH upstream IdPs.
+* **OAuth2 Clients**: OAuth2 clients that can authenticate with oidcd (BFF apps, SPAs, service accounts). Includes: public/confidential, redirect URIs, allowed scopes/audiences. Optional if using proxy-only mode.
 * **Tokens**: access TTL (5–10m), refresh TTL (e.g., 30d), rotation on, default audience.
 * **Sessions**: TTL (e.g., 12h), sliding window optional.
-* **Proxy**: routes with host-based routing, authentication requirements, JWT/claims injection, scope enforcement.
+* **Proxy**: routes with host-based routing, authentication requirements, JWT/claims injection, scope enforcement. Uses session cookies, not OAuth2 flows.
 
 ### Configuration Example
 
@@ -440,7 +440,10 @@ keys:
   rotate_interval: 168h0m0s
   alg: RS256
 
-clients:
+# OAuth2 clients that can authenticate WITH oidcd
+# These are for BFF applications, SPAs, or service accounts doing OAuth2 flows
+# Not required if using proxy-only mode (proxy uses session cookies, not OAuth2)
+oauth2_clients:
   - client_id: webapp
     client_secret: ""
     redirect_uris:
@@ -452,17 +455,7 @@ clients:
     audiences:
       - ai-gateway
 
-  - client_id: gateway-proxy
-    client_secret: ""
-    redirect_uris:
-      - http://localhost:8080/callback/entra
-    scopes:
-      - openid
-      - profile
-      - email
-    audiences:
-      - proxy
-
+# What oidcd uses to authenticate with upstream IdP (Entra/Auth0)
 providers:
   default: entra
   entra:
@@ -480,6 +473,8 @@ tokens:
 sessions:
   ttl: 12h0m0s
 
+# Reverse proxy routes (session-based authentication, no OAuth2 flow needed)
+# Proxy mode protects existing applications without requiring code changes
 proxy:
   routes:
     - host: demo-public.example.com

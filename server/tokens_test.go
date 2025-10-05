@@ -16,13 +16,10 @@ func newTestTokenService(t *testing.T) (*TokenService, *InMemoryStore, *Client) 
 	t.Helper()
 	cfg := DefaultConfig()
 	cfg.Server.PublicURL = "http://gateway.test"
-	cfg.Tokens.AccessTTL = time.Minute
-	cfg.Tokens.RefreshTTL = 24 * time.Hour
-	cfg.Tokens.RotateRefresh = true
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	store := NewInMemoryStore()
-	jwks, err := NewJWKSManager(cfg.Keys, logger)
+	jwks, err := NewJWKSManager(cfg.Server.SecretsPath, logger)
 	if err != nil {
 		t.Fatalf("NewJWKSManager: %v", err)
 	}
@@ -273,7 +270,7 @@ func TestValidateAccessToken_WrongIssuer(t *testing.T) {
 	cfg.Server.PublicURL = "http://wrong-issuer.test"
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	store := NewInMemoryStore()
-	jwks, _ := NewJWKSManager(cfg.Keys, logger)
+	jwks, _ := NewJWKSManager(cfg.Server.SecretsPath, logger)
 	wrongTS := NewTokenService(cfg, store, jwks, logger)
 
 	client := &Client{

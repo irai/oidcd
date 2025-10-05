@@ -837,13 +837,13 @@ func setupTestApp(t *testing.T) *App {
 	cfg.Server.DevMode = true
 
 	// Add a test client to prevent 5xx errors
-	cfg.Clients = []ClientConfig{
+	cfg.OAuth2Clients = []ClientConfig{
 		{
 			ClientID:     "webapp",
 			ClientSecret: "test-secret",
 			RedirectURIs: []string{"http://127.0.0.1:3000/callback"},
 			Scopes:       []string{"openid", "profile", "email"},
-			Audiences:    []string{cfg.Tokens.AudienceDefault},
+			Audiences:    []string{cfg.Server.ServerID},
 		},
 	}
 

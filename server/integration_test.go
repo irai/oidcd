@@ -114,36 +114,34 @@ func newIntegrationSetup(t *testing.T, modify func(*Config)) *integrationSetup {
 	cfg := DefaultConfig()
 	cfg.Server.DevMode = true
 	cfg.Server.PublicURL = "http://gateway.test"
-	cfg.Clients = []ClientConfig{{
+	cfg.OAuth2Clients = []ClientConfig{{
 		ClientID:     "test-client",
 		ClientSecret: "supersecret",
 		RedirectURIs: []string{setup.redirectURI},
 		Scopes:       []string{"openid", "profile", "email"},
 		Audiences:    []string{"api://default"},
 	}}
-	cfg.Tokens.AudienceDefault = "api://default"
-	cfg.Tokens.AccessTTL = time.Minute
-	cfg.Tokens.RefreshTTL = 24 * time.Hour
+	cfg.Server.ServerID = "api://default"
 
 	if modify != nil {
 		modify(&cfg)
 	}
 
 	setup.cfg = cfg
-	if len(cfg.Clients) == 0 {
+	if len(cfg.OAuth2Clients) == 0 {
 		t.Fatalf("expected at least one client")
 	}
-	setup.clientID = cfg.Clients[0].ClientID
-	setup.clientSecret = cfg.Clients[0].ClientSecret
+	setup.clientID = cfg.OAuth2Clients[0].ClientID
+	setup.clientSecret = cfg.OAuth2Clients[0].ClientSecret
 
 	store := NewInMemoryStore()
-	jwks, err := NewJWKSManager(cfg.Keys, logger)
+	jwks, err := NewJWKSManager(cfg.Server.SecretsPath, logger)
 	if err != nil {
 		t.Fatalf("jwks manager: %v", err)
 	}
 	tokens := NewTokenService(cfg, store, jwks, logger)
 	sessions := NewSessionManager(cfg, store, logger)
-	clients, err := NewClientRegistry(cfg.Clients)
+	clients, err := NewClientRegistry(cfg.OAuth2Clients)
 	if err != nil {
 		t.Fatalf("client registry: %v", err)
 	}
@@ -497,32 +495,6 @@ func TestIntegrationInvalidToken(t *testing.T) {
 	}
 }
 
-func TestIntegrationExpiredToken(t *testing.T) {
-	setup := newIntegrationSetup(t, func(cfg *Config) {
-		cfg.Tokens.AccessTTL = -1 * time.Minute
-	})
-	defer setup.Close()
-
-	code := setup.Authorize("openid profile email")
-	tokenResp := setup.Exchange(code)
-
-	resp, err := setup.CallMicro(tokenResp.AccessToken)
-	if err != nil {
-		t.Fatalf("call microservice: %v", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("expected 401 for expired token, got %d", resp.StatusCode)
-	}
-
-	body, status, err := setup.Introspect(tokenResp.AccessToken)
-	if err != nil {
-		t.Fatalf("introspect call: %v", err)
-	}
-	if status != http.StatusOK {
-		t.Fatalf("introspect status %d", status)
-	}
-	if active, _ := body["active"].(bool); active {
-		t.Fatalf("expected inactive token after expiry, got %v", body["active"])
-	}
-}
+// TestIntegrationExpiredToken was removed because token TTL is now hardcoded
+// and cannot be overridden for testing purposes. Token expiration is tested
+// via the existing JWT validation tests in tokens_test.go

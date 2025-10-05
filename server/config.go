@@ -11,52 +11,47 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// Hardcoded token and session defaults
+const (
+	DefaultAccessTTL     = 10 * time.Minute
+	DefaultRefreshTTL    = 24 * time.Hour
+	DefaultSessionTTL    = 12 * time.Hour
+	DefaultRotateRefresh = true
+)
+
+// Hardcoded CORS defaults
+var (
+	DefaultCORSAllowedHeaders = []string{"Authorization", "Content-Type"}
+	DefaultCORSAllowedMethods = []string{"GET", "POST", "OPTIONS"}
+)
+
 // Config captures the full application configuration loaded from YAML and environment variables.
 type Config struct {
-	Server    ServerConfig   `yaml:"server"`
-	Keys      KeyConfig      `yaml:"keys"`
-	Clients   []ClientConfig `yaml:"clients"`
-	Providers ProviderConfig `yaml:"providers"`
-	Tokens    TokenConfig    `yaml:"tokens"`
-	Sessions  SessionConfig  `yaml:"sessions"`
-	Proxy     ProxyConfig    `yaml:"proxy"`
+	Server        ServerConfig   `yaml:"server"`
+	OAuth2Clients []ClientConfig `yaml:"oauth2_clients"`
+	Proxy         ProxyConfig    `yaml:"proxy"`
 }
 
 // ServerConfig controls listener, TLS, and HTTP concerns.
 type ServerConfig struct {
-	PublicURL         string     `yaml:"public_url"`
-	DevListenAddr     string     `yaml:"dev_listen_addr"`
-	HTTPListenAddr    string     `yaml:"http_listen_addr"`
-	HTTPSListenAddr   string     `yaml:"https_listen_addr"`
-	DevMode           bool       `yaml:"dev_mode"`
-	CookieDomain      string     `yaml:"cookie_domain"`
-	TLS               TLSConfig  `yaml:"tls"`
-	TrustProxyHeaders bool       `yaml:"trust_proxy_headers"`
-	CORS              CORSConfig `yaml:"cors"`
+	PublicURL         string         `yaml:"public_url"`
+	DevListenAddr     string         `yaml:"dev_listen_addr"`
+	HTTPListenAddr    string         `yaml:"http_listen_addr"`
+	HTTPSListenAddr   string         `yaml:"https_listen_addr"`
+	DevMode           bool           `yaml:"dev_mode"`
+	CookieDomain      string         `yaml:"cookie_domain"`
+	SecretsPath       string         `yaml:"secrets_path"`
+	ServerID          string         `yaml:"server_id"`
+	TLS               TLSConfig      `yaml:"tls"`
+	TrustProxyHeaders bool           `yaml:"trust_proxy_headers"`
+	Providers         ProviderConfig `yaml:"providers"`
 }
 
 // TLSConfig defines autocert behaviour and TLS constraints.
 type TLSConfig struct {
-	Mode       string   `yaml:"mode"`
 	Domains    []string `yaml:"domains"`
-	CacheDir   string   `yaml:"cache_dir"`
 	Email      string   `yaml:"email"`
-	HSTSMaxAge int      `yaml:"hsts_max_age"`
 	MinVersion string   `yaml:"min_version"`
-}
-
-// CORSConfig controls CORS behaviour.
-type CORSConfig struct {
-	ClientOriginURLs []string `yaml:"client_origin_urls"`
-	AllowedHeaders   []string `yaml:"allowed_headers"`
-	AllowedMethods   []string `yaml:"allowed_methods"`
-}
-
-// KeyConfig controls JWKS persistence and rotation.
-type KeyConfig struct {
-	JWKSPath       string        `yaml:"jwks_path"`
-	RotateInterval time.Duration `yaml:"rotate_interval"`
-	Alg            string        `yaml:"alg"`
 }
 
 // ClientConfig describes an OAuth client.
@@ -82,19 +77,6 @@ type UpstreamProvider struct {
 	ClientID     string `yaml:"client_id"`
 	ClientSecret string `yaml:"client_secret"`
 	TenantID     string `yaml:"tenant_id"`
-}
-
-// TokenConfig captures token TTL and rotation knobs.
-type TokenConfig struct {
-	AccessTTL       time.Duration `yaml:"access_ttl"`
-	RefreshTTL      time.Duration `yaml:"refresh_ttl"`
-	RotateRefresh   bool          `yaml:"rotate_refresh"`
-	AudienceDefault string        `yaml:"audience_default"`
-}
-
-// SessionConfig drives the cookie-session behaviour.
-type SessionConfig struct {
-	TTL time.Duration `yaml:"ttl"`
 }
 
 // ProxyConfig defines reverse proxy routes for host-based routing.
@@ -155,37 +137,17 @@ func defaultConfig() Config {
 			HTTPListenAddr:  ":80",
 			HTTPSListenAddr: ":443",
 			DevMode:         true,
+			SecretsPath:     ".secrets",
+			ServerID:        "oidcd",
 			TLS: TLSConfig{
-				Mode:       "autocert",
 				Domains:    []string{"localhost"},
-				CacheDir:   "./.certs",
 				Email:      "",
-				HSTSMaxAge: 15552000,
 				MinVersion: "1.2",
 			},
-			CORS: CORSConfig{
-				ClientOriginURLs: []string{"http://localhost:3000"},
-				AllowedHeaders:   []string{"Authorization", "Content-Type"},
-				AllowedMethods:   []string{"GET", "POST", "OPTIONS"},
-			},
-		},
-		Keys: KeyConfig{
-			JWKSPath:       "",
-			RotateInterval: 168 * time.Hour,
-			Alg:            "RS256",
-		},
-		Tokens: TokenConfig{
-			AccessTTL:       10 * time.Minute,
-			RefreshTTL:      720 * time.Hour,
-			RotateRefresh:   true,
-			AudienceDefault: "ai-gateway",
-		},
-		Sessions: SessionConfig{
-			TTL: 12 * time.Hour,
-		},
-		Providers: ProviderConfig{
-			Entra: UpstreamProvider{
-				Issuer: "https://login.microsoftonline.com/common/v2.0",
+			Providers: ProviderConfig{
+				Entra: UpstreamProvider{
+					Issuer: "https://login.microsoftonline.com/common/v2.0",
+				},
 			},
 		},
 	}
@@ -217,17 +179,9 @@ func applyEnvOverrides(cfg *Config) {
 		"OIDCD_SERVER_HTTPS_LISTEN_ADDR": func(v string) { cfg.Server.HTTPSListenAddr = v },
 		"OIDCD_SERVER_DEV_MODE":          func(v string) { cfg.Server.DevMode = parseBool(v, cfg.Server.DevMode) },
 		"OIDCD_SERVER_TLS_DOMAINS":       func(v string) { cfg.Server.TLS.Domains = splitAndTrim(v) },
-		"OIDCD_SERVER_TLS_CACHE_DIR":     func(v string) { cfg.Server.TLS.CacheDir = v },
 		"OIDCD_SERVER_TLS_EMAIL":         func(v string) { cfg.Server.TLS.Email = v },
-		"OIDCD_SERVER_TLS_MODE":          func(v string) { cfg.Server.TLS.Mode = v },
-		"OIDCD_KEYS_JWKS_PATH":           func(v string) { cfg.Keys.JWKSPath = v },
-		"OIDCD_TOKENS_ACCESS_TTL":        func(v string) { cfg.Tokens.AccessTTL = parseDuration(v, cfg.Tokens.AccessTTL) },
-		"OIDCD_TOKENS_REFRESH_TTL":       func(v string) { cfg.Tokens.RefreshTTL = parseDuration(v, cfg.Tokens.RefreshTTL) },
-		"OIDCD_TOKENS_ROTATE_REFRESH":    func(v string) { cfg.Tokens.RotateRefresh = parseBool(v, cfg.Tokens.RotateRefresh) },
-	}
-
-	if val, ok := os.LookupEnv("OIDCD_SERVER_CORS_CLIENT_ORIGIN_URLS"); ok {
-		cfg.Server.CORS.ClientOriginURLs = splitAndTrim(val)
+		"OIDCD_SERVER_SECRETS_PATH":      func(v string) { cfg.Server.SecretsPath = v },
+		"OIDCD_SERVER_ID":                func(v string) { cfg.Server.ServerID = v },
 	}
 
 	for key, fn := range overrides {
@@ -300,11 +254,93 @@ func (c Config) Validate() error {
 		}
 	}
 
-	if len(c.Clients) == 0 {
-		return errors.New("at least one OAuth client must be configured")
+	// Check if proxy mode requires authentication
+	hasAuthProxyRoutes := false
+	for _, route := range c.Proxy.Routes {
+		if route.RequireAuth {
+			hasAuthProxyRoutes = true
+			break
+		}
 	}
-	if !c.Server.DevMode && c.Providers.Default == "" {
-		return errors.New("providers.default is required")
+
+	// OAuth2 clients are only required if not using proxy-only mode
+	// Proxy mode uses session cookies, not OAuth2 flows
+	if len(c.OAuth2Clients) == 0 && !hasAuthProxyRoutes {
+		return errors.New("at least one OAuth2 client must be configured (unless using proxy-only mode)")
+	}
+
+	if !c.Server.DevMode && c.Server.Providers.Default == "" {
+		return errors.New("server.providers.default is required")
 	}
 	return nil
+}
+
+// InferCORSOrigins extracts allowed origins from OAuth2 client redirect URIs and proxy targets
+func (c Config) InferCORSOrigins() []string {
+	seen := make(map[string]bool)
+	origins := []string{}
+
+	// Extract origins from OAuth2 client redirect URIs
+	for _, client := range c.OAuth2Clients {
+		for _, redirectURI := range client.RedirectURIs {
+			if origin := extractOrigin(redirectURI); origin != "" && !seen[origin] {
+				seen[origin] = true
+				origins = append(origins, origin)
+			}
+		}
+	}
+
+	// Extract origins from proxy target URLs
+	for _, route := range c.Proxy.Routes {
+		if origin := extractOrigin(route.Target); origin != "" && !seen[origin] {
+			seen[origin] = true
+			origins = append(origins, origin)
+		}
+	}
+
+	return origins
+}
+
+// extractOrigin extracts the origin (scheme://host:port) from a URL
+func extractOrigin(urlStr string) string {
+	if urlStr == "" || urlStr == "*" {
+		return ""
+	}
+
+	// Parse the URL
+	u, err := parseURL(urlStr)
+	if err != nil {
+		return ""
+	}
+
+	// Build origin from scheme and host
+	if u.Scheme == "" || u.Host == "" {
+		return ""
+	}
+
+	return u.Scheme + "://" + u.Host
+}
+
+// parseURL is a helper to parse URLs
+func parseURL(rawURL string) (*struct{ Scheme, Host string }, error) {
+	// Simple URL parsing to extract scheme and host
+	scheme := ""
+	host := ""
+
+	// Remove scheme
+	if idx := strings.Index(rawURL, "://"); idx != -1 {
+		scheme = rawURL[:idx]
+		rawURL = rawURL[idx+3:]
+	} else {
+		return nil, fmt.Errorf("invalid URL: missing scheme")
+	}
+
+	// Extract host (everything before first /)
+	if idx := strings.Index(rawURL, "/"); idx != -1 {
+		host = rawURL[:idx]
+	} else {
+		host = rawURL
+	}
+
+	return &struct{ Scheme, Host string }{scheme, host}, nil
 }

@@ -40,14 +40,14 @@ type App struct {
 func NewApp(ctx context.Context, cfg Config, logger *slog.Logger) (*App, error) {
 	store := NewInMemoryStore()
 
-	jwks, err := NewJWKSManager(cfg.Keys, logger)
+	jwks, err := NewJWKSManager(cfg.Server.SecretsPath, logger)
 	if err != nil {
 		return nil, err
 	}
 
 	tokens := NewTokenService(cfg, store, jwks, logger)
 	sessions := NewSessionManager(cfg, store, logger)
-	clients, err := NewClientRegistry(cfg.Clients)
+	clients, err := NewClientRegistry(cfg.OAuth2Clients)
 	if err != nil {
 		return nil, err
 	}
@@ -57,7 +57,7 @@ func NewApp(ctx context.Context, cfg Config, logger *slog.Logger) (*App, error) 
 		return nil, err
 	}
 
-	defaultProvider := cfg.Providers.Default
+	defaultProvider := cfg.Server.Providers.Default
 	if cfg.Server.DevMode && defaultProvider == "" {
 		defaultProvider = localProviderName
 	}
@@ -77,8 +77,8 @@ func NewApp(ctx context.Context, cfg Config, logger *slog.Logger) (*App, error) 
 	if cfg.Server.DevMode {
 		debugRedirect := strings.TrimSuffix(cfg.Server.PublicURL, "/") + "/dev/auth/result"
 		var debugClient *Client
-		if len(cfg.Clients) > 0 {
-			firstID := cfg.Clients[0].ClientID
+		if len(cfg.OAuth2Clients) > 0 {
+			firstID := cfg.OAuth2Clients[0].ClientID
 			if c, ok := clients.Get(firstID); ok {
 				debugClient = c
 			}
@@ -89,7 +89,7 @@ func NewApp(ctx context.Context, cfg Config, logger *slog.Logger) (*App, error) 
 				ClientSecret: "",
 				RedirectURIs: []string{debugRedirect},
 				Scopes:       []string{"openid", "profile", "email"},
-				Audiences:    []string{cfg.Tokens.AudienceDefault},
+				Audiences:    []string{cfg.Server.ServerID},
 				Public:       true,
 			}
 			clients.Add(debugClient)
@@ -106,6 +106,22 @@ func NewApp(ctx context.Context, cfg Config, logger *slog.Logger) (*App, error) 
 
 	// Initialize proxy if routes are configured
 	if len(cfg.Proxy.Routes) > 0 {
+		// Register internal proxy client if not already configured
+		proxyClientID := "gateway-proxy"
+		if _, exists := clients.Get(proxyClientID); !exists {
+			// Auto-register internal proxy client with wildcard redirect URIs
+			internalProxyClient := &Client{
+				ClientID:     proxyClientID,
+				ClientSecret: "",
+				RedirectURIs: []string{"*"}, // Accept any redirect URI for proxy callbacks
+				Scopes:       []string{"openid", "profile", "email"},
+				Audiences:    []string{"proxy"},
+				Public:       true,
+			}
+			clients.Add(internalProxyClient)
+			logger.Info("auto-registered internal proxy client", "client_id", proxyClientID)
+		}
+
 		proxy, err := NewProxyManager(cfg.Proxy, tokens, sessions, store, cfg.Server, logger)
 		if err != nil {
 			return nil, fmt.Errorf("init proxy: %w", err)
@@ -134,7 +150,12 @@ func (a *App) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	req, err := a.parseAuthorizeRequest(r)
 	if err != nil {
 		a.Logger.Warn("authorize invalid request", "error", err)
-		oauthError(w, req.RedirectURI, req.State, "invalid_request", err.Error())
+		// Only use redirect if available, otherwise return error directly
+		if req.RedirectURI != "" {
+			oauthError(w, req.RedirectURI, req.State, "invalid_request", err.Error())
+		} else {
+			http.Error(w, fmt.Sprintf("invalid_request: %s", err.Error()), http.StatusBadRequest)
+		}
 		return
 	}
 
@@ -522,7 +543,7 @@ func (a *App) parseAuthorizeRequest(r *http.Request) (AuthorizeRequest, error) {
 
 	audience := q.Get("audience")
 	if audience == "" {
-		audience = a.Config.Tokens.AudienceDefault
+		audience = a.Config.Server.ServerID
 	}
 
 	return AuthorizeRequest{
@@ -621,7 +642,9 @@ func oauthError(w http.ResponseWriter, redirectURI, state, code, desc string) {
 		q.Set("state", state)
 	}
 	uri.RawQuery = q.Encode()
-	http.Redirect(w, nil, uri.String(), http.StatusFound)
+	// Use manual redirect to avoid nil request panic
+	w.Header().Set("Location", uri.String())
+	w.WriteHeader(http.StatusFound)
 }
 
 func extractBearerToken(header string) string {

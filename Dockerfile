@@ -11,6 +11,7 @@ RUN addgroup -S gateway && adduser -S gateway -G gateway
 WORKDIR /app
 COPY --from=build /out/token-gateway /usr/local/bin/token-gateway
 COPY config.yaml /app/config.yaml
+RUN mkdir -p /app/.secrets && chown -R gateway:gateway /app/.secrets
 USER gateway
 EXPOSE 8080 8443 80 443
 ENTRYPOINT ["/usr/local/bin/token-gateway", "-config", "/app/config.yaml"]

@@ -13,7 +13,7 @@ func TestLoadConfigAppliesEnvOverrides(t *testing.T) {
 	yaml := `server:
   public_url: http://localhost:8080
   dev_mode: true
-clients:
+oauth2_clients:
   - client_id: web
     client_secret: s3cret
     redirect_uris: ["http://localhost/callback"]
@@ -24,7 +24,7 @@ clients:
 	}
 
 	t.Setenv("OIDCD_SERVER_PUBLIC_URL", "https://gateway.example.com")
-	t.Setenv("OIDCD_TOKENS_ACCESS_TTL", "2m")
+	t.Setenv("OIDCD_SERVER_ID", "test-server")
 
 	cfg, err := LoadConfig(path)
 	if err != nil {
@@ -34,16 +34,33 @@ clients:
 	if cfg.Server.PublicURL != "https://gateway.example.com" {
 		t.Fatalf("PublicURL override mismatch, got %q", cfg.Server.PublicURL)
 	}
-	if cfg.Tokens.AccessTTL != 2*time.Minute {
-		t.Fatalf("AccessTTL override mismatch, got %s", cfg.Tokens.AccessTTL)
+	if cfg.Server.ServerID != "test-server" {
+		t.Fatalf("ServerID override mismatch, got %s", cfg.Server.ServerID)
 	}
 }
 
 func TestConfigValidateRequiresClient(t *testing.T) {
 	cfg := DefaultConfig()
-	cfg.Clients = nil
+	cfg.OAuth2Clients = nil
+	// Should fail when no OAuth2 clients AND no authenticated proxy routes
 	if err := cfg.Validate(); err == nil {
-		t.Fatalf("expected validation error when no clients configured")
+		t.Fatalf("expected validation error when no oauth2_clients configured and no proxy routes")
+	}
+}
+
+func TestConfigValidateAllowsProxyOnlyMode(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.OAuth2Clients = nil
+	cfg.Proxy.Routes = []ProxyRoute{
+		{
+			Host:        "demo.example.com",
+			Target:      "http://backend:3000",
+			RequireAuth: true,
+		},
+	}
+	// Should succeed: proxy mode with auth doesn't require OAuth2 clients
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("proxy-only mode should not require oauth2_clients: %v", err)
 	}
 }
 

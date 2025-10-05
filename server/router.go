@@ -23,9 +23,9 @@ func (a *App) buildOIDCRouter() http.Handler {
 	r.Use(RequestIDMiddleware)
 	r.Use(LoggingMiddleware(a.Logger))
 	r.Use(RecoveryMiddleware(a.Logger, a.Config.Server.DevMode))
-	r.Use(CORSMiddleware(a.Config.Server.CORS))
+	r.Use(CORSMiddleware(a.Config.InferCORSOrigins()))
 	if !a.Config.Server.DevMode {
-		r.Use(SecurityHeadersMiddleware(a.Config.Server.TLS.HSTSMaxAge))
+		r.Use(SecurityHeadersMiddleware())
 	}
 
 	r.Get("/.well-known/openid-configuration", a.handleDiscovery)
@@ -58,9 +58,9 @@ func (a *App) buildProxyRouter() http.Handler {
 	r.Use(RequestIDMiddleware)
 	r.Use(LoggingMiddleware(a.Logger))
 	r.Use(RecoveryMiddleware(a.Logger, a.Config.Server.DevMode))
-	r.Use(CORSMiddleware(a.Config.Server.CORS))
+	r.Use(CORSMiddleware(a.Config.InferCORSOrigins()))
 	if !a.Config.Server.DevMode {
-		r.Use(SecurityHeadersMiddleware(a.Config.Server.TLS.HSTSMaxAge))
+		r.Use(SecurityHeadersMiddleware())
 	}
 
 	// Mount OIDC endpoints - these always take precedence

@@ -4,9 +4,9 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"fmt"
 	"log/slog"
 	"net/http"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -64,7 +64,10 @@ func RecoveryMiddleware(logger *slog.Logger, dev bool) func(http.Handler) http.H
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			defer func() {
 				if err := recover(); err != nil {
-					logger.Error("panic", "error", err)
+					// Log panic with stack trace for debugging
+					buf := make([]byte, 4096)
+					n := runtime.Stack(buf, false)
+					logger.Error("panic", "error", err, "stack", string(buf[:n]))
 					http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 				}
 			}()
@@ -73,11 +76,10 @@ func RecoveryMiddleware(logger *slog.Logger, dev bool) func(http.Handler) http.H
 	}
 }
 
-// CORSMiddleware applies configured CORS policy.
-func CORSMiddleware(cfg CORSConfig) func(http.Handler) http.Handler {
-	allowedMethods := strings.Join(cfg.AllowedMethods, ", ")
-	allowedHeaders := strings.Join(cfg.AllowedHeaders, ", ")
-	allowedOrigins := cfg.ClientOriginURLs
+// CORSMiddleware applies CORS policy with inferred origins from config.
+func CORSMiddleware(allowedOrigins []string) func(http.Handler) http.Handler {
+	allowedMethods := strings.Join(DefaultCORSAllowedMethods, ", ")
+	allowedHeaders := strings.Join(DefaultCORSAllowedHeaders, ", ")
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -99,12 +101,13 @@ func CORSMiddleware(cfg CORSConfig) func(http.Handler) http.Handler {
 }
 
 // SecurityHeadersMiddleware enforces HSTS in production.
-func SecurityHeadersMiddleware(maxAge int) func(http.Handler) http.Handler {
+// Uses hardcoded HSTS max-age of 180 days (15552000 seconds)
+func SecurityHeadersMiddleware() func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.TLS != nil {
 				w.Header().Set("Strict-Transport-Security",
-					fmt.Sprintf("max-age=%d; includeSubDomains", maxAge))
+					"max-age=15552000; includeSubDomains") // 180 days
 			}
 			next.ServeHTTP(w, r)
 		})
