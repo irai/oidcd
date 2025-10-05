@@ -150,8 +150,10 @@ func (a *App) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	req, err := a.parseAuthorizeRequest(r)
 	if err != nil {
 		a.Logger.Warn("authorize invalid request", "error", err)
-		// Only use redirect if available, otherwise return error directly
-		if req.RedirectURI != "" {
+		// Only redirect if we have a valid client AND registered redirect_uri
+		// Per OAuth2 spec, if redirect_uri is invalid/unregistered, return error directly
+		canRedirect := req.Client != nil && req.RedirectURI != "" && req.Client.ValidRedirect(req.RedirectURI)
+		if canRedirect {
 			oauthError(w, req.RedirectURI, req.State, "invalid_request", err.Error())
 		} else {
 			http.Error(w, fmt.Sprintf("invalid_request: %s", err.Error()), http.StatusBadRequest)
@@ -622,7 +624,9 @@ func writeJSON(w http.ResponseWriter, v any) {
 }
 
 func oauthError(w http.ResponseWriter, redirectURI, state, code, desc string) {
-	if redirectURI == "" {
+	// Never redirect to unsafe URIs - always return error as JSON instead
+	if redirectURI == "" || !isSafeRedirectURI(redirectURI) {
+		w.WriteHeader(http.StatusBadRequest)
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": code, "error_description": desc})
 		return
