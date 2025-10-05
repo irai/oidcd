@@ -34,3 +34,5 @@ go.work.sum
 */config.yaml
 config.yaml
 .claude/settings.local.json
+.secrets/*
+oidcd

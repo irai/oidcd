@@ -28,6 +28,7 @@ import (
 
 func main() {
 	configPath := flag.String("config", os.Getenv("OIDCD_CONFIG"), "Path to YAML config")
+	configCmd := flag.String("config-cmd", "", "Config command: 'init' or 'validate'")
 	logLevel := flag.String("log-level", "info", "Logging level (debug, info, warn, error)")
 	flag.StringVar(logLevel, "l", "info", "Alias for -log-level")
 	flag.Parse()
@@ -35,6 +36,33 @@ func main() {
 	level, err := parseLogLevel(*logLevel)
 	if err != nil {
 		log.Fatalf("invalid log level %q: %v", *logLevel, err)
+	}
+
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level}))
+
+	// Handle config commands (init/validate)
+	if *configCmd != "" {
+		configFile := *configPath
+		if configFile == "" {
+			configFile = "./config.yaml"
+		}
+
+		switch *configCmd {
+		case "init":
+			if err := runConfigInit(configFile, logger); err != nil {
+				log.Fatalf("config init failed: %v", err)
+			}
+			logger.Info("configuration initialized successfully", "path", configFile)
+			return
+		case "validate":
+			if err := runConfigValidate(configFile, logger); err != nil {
+				log.Fatalf("config validation failed: %v", err)
+			}
+			logger.Info("configuration is valid", "path", configFile)
+			return
+		default:
+			log.Fatalf("unknown config command %q. Use 'init' or 'validate'", *configCmd)
+		}
 	}
 
 	args := flag.Args()
@@ -54,9 +82,7 @@ func main() {
 		configFile = "./config.yaml"
 	}
 
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level}))
-
-	cfg, err := loadOrSetupConfig(configFile, logger)
+	cfg, err := loadConfig(configFile, logger)
 	if err != nil {
 		log.Fatalf("load config: %v", err)
 	}
@@ -75,6 +101,11 @@ func main() {
 		logger.Info("provider connectivity succeeded", "provider", providerName)
 		return
 	}
+
+	// Validate URLs are accessible on startup
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	validateStartupURLs(ctx, cfg, logger)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -247,15 +278,138 @@ func randomHex(n int) string {
 	return hex.EncodeToString(buf)
 }
 
-func loadOrSetupConfig(path string, logger *slog.Logger) (server.Config, error) {
+func loadConfig(path string, logger *slog.Logger) (server.Config, error) {
 	if _, err := os.Stat(path); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return runSetup(path, logger)
+			return server.Config{}, fmt.Errorf("config file not found at %s. Run with -config-cmd=init to create it", path)
 		}
 		return server.Config{}, fmt.Errorf("stat config: %w", err)
 	}
 	logger.Debug("loading config", "path", path)
 	return server.LoadConfig(path)
+}
+
+func runConfigInit(path string, logger *slog.Logger) error {
+	if _, err := os.Stat(path); err == nil {
+		return fmt.Errorf("config file already exists at %s. Remove it first or use a different path", path)
+	}
+	_, err := runSetup(path, logger)
+	return err
+}
+
+func runConfigValidate(path string, logger *slog.Logger) error {
+	cfg, err := server.LoadConfig(path)
+	if err != nil {
+		return err
+	}
+
+	// Validate URLs are accessible
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	logger.Info("validating configuration URLs...")
+
+	// Validate provider URLs
+	if cfg.Server.Providers.Default != "" {
+		provider := getProviderFromConfig(cfg, cfg.Server.Providers.Default)
+		if provider != nil && provider.Issuer != "" {
+			if err := validateURL(ctx, provider.Issuer+"/.well-known/openid-configuration", logger); err != nil {
+				logger.Error("provider URL validation failed", "provider", cfg.Server.Providers.Default, "issuer", provider.Issuer, "error", err)
+			} else {
+				logger.Info("provider URL is accessible", "provider", cfg.Server.Providers.Default, "issuer", provider.Issuer)
+			}
+		}
+	}
+
+	// Validate proxy backend URLs
+	for i, route := range cfg.Proxy.Routes {
+		if err := validateURL(ctx, route.Target, logger); err != nil {
+			logger.Error("proxy backend URL validation failed", "index", i, "host", route.Host, "target", route.Target, "error", err)
+		} else {
+			logger.Info("proxy backend URL is accessible", "host", route.Host, "target", route.Target)
+		}
+	}
+
+	logger.Info("configuration validation complete")
+	return nil
+}
+
+func validateStartupURLs(ctx context.Context, cfg server.Config, logger *slog.Logger) {
+	// Validate provider URLs (non-blocking, just warnings)
+	if cfg.Server.Providers.Default != "" {
+		provider := getProviderFromConfig(cfg, cfg.Server.Providers.Default)
+		if provider != nil && provider.Issuer != "" {
+			wellKnownURL := provider.Issuer + "/.well-known/openid-configuration"
+			if err := validateURL(ctx, wellKnownURL, logger); err != nil {
+				logger.Warn("provider URL may not be accessible",
+					"provider", cfg.Server.Providers.Default,
+					"issuer", provider.Issuer,
+					"url", wellKnownURL,
+					"error", err,
+					"note", "server will continue but authentication may fail")
+			} else {
+				logger.Info("provider URL is accessible", "provider", cfg.Server.Providers.Default, "issuer", provider.Issuer)
+			}
+		}
+	}
+
+	// Validate proxy backend URLs (non-blocking, just warnings)
+	for i, route := range cfg.Proxy.Routes {
+		if err := validateURL(ctx, route.Target, logger); err != nil {
+			logger.Warn("proxy backend URL may not be accessible",
+				"index", i,
+				"host", route.Host,
+				"target", route.Target,
+				"error", err,
+				"note", "server will continue but proxy requests may fail")
+		} else {
+			logger.Debug("proxy backend URL is accessible", "host", route.Host, "target", route.Target)
+		}
+	}
+}
+
+func validateURL(ctx context.Context, urlStr string, logger *slog.Logger) error {
+	client := &http.Client{
+		Timeout: 5 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, urlStr, nil)
+	if err != nil {
+		req, err = http.NewRequestWithContext(ctx, http.MethodGet, urlStr, nil)
+		if err != nil {
+			return fmt.Errorf("create request: %w", err)
+		}
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	io.Copy(io.Discard, io.LimitReader(resp.Body, 1024))
+
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("received status %d", resp.StatusCode)
+	}
+
+	return nil
+}
+
+func getProviderFromConfig(cfg server.Config, name string) *server.UpstreamProvider {
+	switch name {
+	case "auth0":
+		return &cfg.Server.Providers.Auth0
+	case "entra":
+		return &cfg.Server.Providers.Entra
+	default:
+		if p, ok := cfg.Server.Providers.Extra[name]; ok {
+			return &p
+		}
+		return nil
+	}
 }
 
 func runSetup(path string, logger *slog.Logger) (server.Config, error) {

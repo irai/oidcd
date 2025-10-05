@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 	"time"
@@ -115,7 +116,18 @@ func LoadConfig(path string) (Config, error) {
 			return Config{}, fmt.Errorf("read config: %w", err)
 		}
 		sanitized := stripYAMLComments(b)
-		if err := yaml.Unmarshal(sanitized, &cfg); err != nil {
+
+		// Use strict unmarshaling to detect unknown fields
+		decoder := yaml.NewDecoder(bytes.NewReader(sanitized))
+		decoder.KnownFields(true)
+
+		if err := decoder.Decode(&cfg); err != nil {
+			// Check if it's an unknown field error
+			if strings.Contains(err.Error(), "field") && strings.Contains(err.Error(), "not found") {
+				slog.Error("Configuration contains unknown keys", "error", err, "file", path)
+				return Config{}, fmt.Errorf("invalid config: %w (check for typos or deprecated fields)", err)
+			}
+			slog.Error("Failed to parse configuration", "error", err, "file", path)
 			return Config{}, fmt.Errorf("parse config: %w", err)
 		}
 	}
@@ -123,6 +135,7 @@ func LoadConfig(path string) (Config, error) {
 	applyEnvOverrides(&cfg)
 
 	if err := cfg.Validate(); err != nil {
+		slog.Error("Configuration validation failed", "error", err)
 		return Config{}, err
 	}
 
@@ -224,10 +237,28 @@ func splitAndTrim(val string) []string {
 // Validate performs minimal sanity checks on the config.
 func (c Config) Validate() error {
 	if c.Server.PublicURL == "" {
+		slog.Error("Missing required configuration", "field", "server.public_url")
 		return errors.New("server.public_url is required")
 	}
+
+	// Validate server.public_url format
+	if !strings.HasPrefix(c.Server.PublicURL, "http://") && !strings.HasPrefix(c.Server.PublicURL, "https://") {
+		slog.Error("Invalid configuration value", "field", "server.public_url", "value", c.Server.PublicURL, "reason", "must start with http:// or https://")
+		return fmt.Errorf("server.public_url must start with http:// or https://, got: %s", c.Server.PublicURL)
+	}
+
 	if !c.Server.DevMode && len(c.Server.TLS.Domains) == 0 {
+		slog.Error("Missing required configuration for production mode", "field", "server.tls.domains")
 		return errors.New("server.tls.domains must be provided in production")
+	}
+
+	// Validate TLS minimum version
+	if c.Server.TLS.MinVersion != "" {
+		validVersions := map[string]bool{"1.2": true, "1.3": true}
+		if !validVersions[c.Server.TLS.MinVersion] {
+			slog.Error("Invalid TLS minimum version", "field", "server.tls.min_version", "value", c.Server.TLS.MinVersion, "valid_values", []string{"1.2", "1.3"})
+			return fmt.Errorf("server.tls.min_version must be '1.2' or '1.3', got: %s", c.Server.TLS.MinVersion)
+		}
 	}
 
 	// Validate cookie_domain matches public_url domain
@@ -250,7 +281,55 @@ func (c Config) Validate() error {
 		// e.g., public_url: gw.dev.nexxia.com.au -> cookie_domain: .dev.nexxia.com.au (valid)
 		cookieDomain := strings.TrimPrefix(c.Server.CookieDomain, ".")
 		if !strings.HasSuffix(publicURL, cookieDomain) {
+			slog.Error("Cookie domain mismatch",
+				"field", "server.cookie_domain",
+				"cookie_domain", c.Server.CookieDomain,
+				"public_url_domain", publicURL,
+				"reason", "cookie_domain must be a suffix of public_url domain")
 			return fmt.Errorf("server.cookie_domain '%s' does not match server.public_url domain '%s'", c.Server.CookieDomain, publicURL)
+		}
+	}
+
+	// Validate OAuth2 client configurations
+	for i, client := range c.OAuth2Clients {
+		if client.ClientID == "" {
+			slog.Error("OAuth2 client missing client_id", "index", i)
+			return fmt.Errorf("oauth2_clients[%d]: client_id is required", i)
+		}
+		if len(client.RedirectURIs) == 0 {
+			slog.Error("OAuth2 client missing redirect URIs", "client_id", client.ClientID, "index", i)
+			return fmt.Errorf("oauth2_clients[%d] (%s): at least one redirect_uri is required", i, client.ClientID)
+		}
+		// Validate redirect URIs format
+		for j, uri := range client.RedirectURIs {
+			if !strings.HasPrefix(uri, "http://") && !strings.HasPrefix(uri, "https://") {
+				slog.Error("Invalid redirect URI", "client_id", client.ClientID, "redirect_uri", uri, "index", j, "reason", "must be a valid HTTP(S) URL")
+				return fmt.Errorf("oauth2_clients[%d] (%s): redirect_uris[%d] must start with http:// or https://, got: %s", i, client.ClientID, j, uri)
+			}
+		}
+	}
+
+	// Validate proxy routes
+	for i, route := range c.Proxy.Routes {
+		if route.Host == "" {
+			slog.Error("Proxy route missing host", "index", i)
+			return fmt.Errorf("proxy.routes[%d]: host is required", i)
+		}
+		if route.Target == "" {
+			slog.Error("Proxy route missing target", "host", route.Host, "index", i)
+			return fmt.Errorf("proxy.routes[%d] (%s): target is required", i, route.Host)
+		}
+		// Validate target URL format
+		if !strings.HasPrefix(route.Target, "http://") && !strings.HasPrefix(route.Target, "https://") {
+			slog.Error("Invalid proxy target URL", "host", route.Host, "target", route.Target, "reason", "must be a valid HTTP(S) URL")
+			return fmt.Errorf("proxy.routes[%d] (%s): target must start with http:// or https://, got: %s", i, route.Host, route.Target)
+		}
+		// Validate timeout if specified
+		if route.Timeout != "" {
+			if _, err := time.ParseDuration(route.Timeout); err != nil {
+				slog.Error("Invalid proxy route timeout", "host", route.Host, "timeout", route.Timeout, "error", err)
+				return fmt.Errorf("proxy.routes[%d] (%s): invalid timeout duration '%s': %w", i, route.Host, route.Timeout, err)
+			}
 		}
 	}
 
@@ -266,13 +345,48 @@ func (c Config) Validate() error {
 	// OAuth2 clients are only required if not using proxy-only mode
 	// Proxy mode uses session cookies, not OAuth2 flows
 	if len(c.OAuth2Clients) == 0 && !hasAuthProxyRoutes {
+		slog.Error("No OAuth2 clients configured", "reason", "at least one OAuth2 client must be configured unless using proxy-only mode")
 		return errors.New("at least one OAuth2 client must be configured (unless using proxy-only mode)")
 	}
 
 	if !c.Server.DevMode && c.Server.Providers.Default == "" {
-		return errors.New("server.providers.default is required")
+		slog.Error("Missing required provider configuration", "field", "server.providers.default", "reason", "required in production mode")
+		return errors.New("server.providers.default is required in production mode")
 	}
+
+	// Validate that the default provider is actually configured
+	if c.Server.Providers.Default != "" {
+		provider := c.getProvider(c.Server.Providers.Default)
+		if provider == nil {
+			slog.Error("Default provider not found", "default_provider", c.Server.Providers.Default, "available", []string{"auth0", "entra"})
+			return fmt.Errorf("server.providers.default '%s' is not configured (check providers.auth0, providers.entra, or providers.extra)", c.Server.Providers.Default)
+		}
+		if provider.Issuer == "" {
+			slog.Error("Provider missing issuer", "provider", c.Server.Providers.Default, "field", fmt.Sprintf("server.providers.%s.issuer", c.Server.Providers.Default))
+			return fmt.Errorf("server.providers.%s.issuer is required", c.Server.Providers.Default)
+		}
+		if provider.ClientID == "" {
+			slog.Error("Provider missing client_id", "provider", c.Server.Providers.Default, "field", fmt.Sprintf("server.providers.%s.client_id", c.Server.Providers.Default))
+			return fmt.Errorf("server.providers.%s.client_id is required", c.Server.Providers.Default)
+		}
+	}
+
 	return nil
+}
+
+// getProvider retrieves a provider by name
+func (c Config) getProvider(name string) *UpstreamProvider {
+	switch name {
+	case "auth0":
+		return &c.Server.Providers.Auth0
+	case "entra":
+		return &c.Server.Providers.Entra
+	default:
+		if p, ok := c.Server.Providers.Extra[name]; ok {
+			return &p
+		}
+		return nil
+	}
 }
 
 // InferCORSOrigins extracts allowed origins from OAuth2 client redirect URIs and proxy targets
