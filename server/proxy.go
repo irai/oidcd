@@ -539,17 +539,11 @@ func (pm *ProxyManager) handleAuthError(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
-	// For browser requests, redirect to dev auth page which will create a session
-	// After session is created, user will be redirected back to original URL
-	scheme := "http"
-	if r.TLS != nil {
-		scheme = "https"
-	}
-	originalURL := fmt.Sprintf("%s://%s%s", scheme, r.Host, r.URL.String())
-
-	// Redirect to dev auth with return URL
-	authURL := fmt.Sprintf("/dev/auth?return_to=%s", url.QueryEscape(originalURL))
-	http.Redirect(w, r, authURL, http.StatusFound)
+	// For browser requests, return 401 Unauthorized
+	// In dev mode with local provider, users should access /dev/auth separately for debugging
+	// In production, this would return an error since proxy routes require pre-established sessions
+	w.Header().Set("WWW-Authenticate", `Session realm="gateway"`)
+	http.Error(w, "Unauthorized: No valid session found for proxy route", http.StatusUnauthorized)
 }
 
 // handleOAuthCallback processes the OAuth callback with authorization code
